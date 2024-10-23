@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"io"BucketName
 	"os"
 	"strings"
 
@@ -16,12 +16,12 @@ import (
 
 type GcpConnectorGeneric struct {
 	BucketName   string
-	fullFilePath string
-	generation   int64
+	FullFilePath string
+	Generation   int64
 }
 
 type GcpConnectorNetwork struct {
-  GcpConnectorGeneric
+	GcpConnectorGeneric
 	BaseCidrRange string
 }
 
@@ -29,14 +29,13 @@ type NetworkConfig struct {
 	Subnets map[string]string `json:"subnets"`
 }
 
-
-func NewGeneric(bucketName string, fullFilePath string) GcpConnectorGeneric{
-  return GcpConnectorGeneric{bucketName, fullFilePath, -1}  
+func NewGeneric(BucketName string, FullFilePath string) GcpConnectorGeneric {
+	return GcpConnectorGeneric{BucketName, FullFilePath, -1}
 }
 
-func NewNetwork(bucketName string, baseCidr string) GcpConnectorNetwork {
+func NewNetwork(BucketName string, baseCidr string) GcpConnectorNetwork {
 	fileName := fmt.Sprintf("cidr-reservation/baseCidr-%s.json", strings.Replace(strings.Replace(baseCidr, ".", "-", -1), "/", "-", -1))
-	return GcpConnectorNetwork{bucketName, fileName, -1, baseCidr}
+	return GcpConnectorNetwork{BucketName, fileName, -1, baseCidr}
 }
 
 func getStorageClient(ctx context.Context) (*storage.Client, error) {
@@ -68,10 +67,10 @@ func (gcp *GcpConnectorGeneric) ReadRemote(ctx context.Context) (*NetworkConfig,
 	if err != nil {
 		return nil, err
 	}
-	objectHandle := bucket.Object(gcp.fullFilePath)
+	objectHandle := bucket.Object(gcp.FullFilePath)
 	attrs, err := objectHandle.Attrs(ctx)
 	if err == nil {
-		gcp.generation = attrs.Generation
+		gcp.Generation = attrs.Generation
 	}
 	rc, err := objectHandle.NewReader(ctx)
 	if err != nil {
@@ -98,10 +97,10 @@ func (gcp *GcpConnectorGeneric) WriteRemote(networkConfig *NetworkConfig, ctx co
 	// Creates a Bucket instance.
 	bucket := client.Bucket(gcp.BucketName)
 	var writer *storage.Writer
-	if gcp.generation == -1 {
-		writer = bucket.Object(gcp.fullFilePath).If(storage.Conditions{DoesNotExist: true}).NewWriter(ctx)
+	if gcp.Generation == -1 {
+		writer = bucket.Object(gcp.FullFilePath).If(storage.Conditions{DoesNotExist: true}).NewWriter(ctx)
 	} else {
-		writer = bucket.Object(gcp.fullFilePath).If(storage.Conditions{GenerationMatch: gcp.generation}).NewWriter(ctx)
+		writer = bucket.Object(gcp.FullFilePath).If(storage.Conditions{GenerationMatch: gcp.Generation}).NewWriter(ctx)
 	}
 	marshalled, err := json.Marshal(networkConfig)
 	if err != nil {
@@ -109,7 +108,7 @@ func (gcp *GcpConnectorGeneric) WriteRemote(networkConfig *NetworkConfig, ctx co
 	}
 	_, _ = writer.Write(marshalled)
 	if err := writer.Close(); err != nil {
-		tflog.Error(ctx, "Failed to write file to GCP", map[string]interface{}{"error": err, "generation": gcp.generation})
+		tflog.Error(ctx, "Failed to write file to GCP", map[string]interface{}{"error": err, "Generation": gcp.Generation})
 		return err
 	}
 	return nil
