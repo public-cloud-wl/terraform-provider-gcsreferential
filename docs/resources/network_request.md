@@ -1,15 +1,15 @@
 ---
-page_title: "cidr-reservator_network_request Resource - terraform-provider-cidr-reservator"
+page_title: "gcsreferential_network_request Resource - terraform-provider-gcsreferential"
 subcategory: ""
 description: "network request resource for reservating an ip range based on a base cidr range, which it is cut out from"
   
 ---
 
-# cidr-reservator_network_request (Resource)
+# gcsreferential_network_request (Resource)
 
 ## Example Usage
 ```
-resource "cidr-reservator_network_request" "network_request" {
+resource "gcsreferential_network_request" "network_request" {
   prefix_length = 26
   base_cidr     = "10.5.0.0/16"
   netmask_id    = "test"

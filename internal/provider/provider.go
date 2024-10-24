@@ -10,25 +10,24 @@ func New(version string) func() *schema.Provider {
 	return func() *schema.Provider {
 		return &schema.Provider{
 			Schema: map[string]*schema.Schema{
-				"reservator_bucket": {
+				"referential_bucket": {
 					Type:     schema.TypeString,
 					Required: true,
 				},
 			},
 			ResourcesMap: map[string]*schema.Resource{
-				"cidr-reservator_network_request": resourceServer(),
+				"gcsreferential_network_request": networkRequest(),
 			},
 			ConfigureContextFunc: providerConfigure,
 		}
 	}
 }
-
-func providerConfigure(ctx context.Context, data *schema.ResourceData) (interface{}, diag.Diagnostics) {
-	cidrReservatorBucket := data.Get("reservator_bucket").(string)
+func configure(version string, p *schema.Provider) func(context.Context, data *schema.ResourceData) (any, diag.Diagnostics) {
+	gcsreferentialBucket := data.Get("referential_bucket").(string)
 	var diags diag.Diagnostics
-	if cidrReservatorBucket == "" {
-		return nil, diag.Errorf("reservator_bucket is not set!")
+	if gcsreferentialBucket == "" {
+		return nil, diag.Errorf("referential_bucket is not set!")
 	}
 
-	return cidrReservatorBucket, diags
+	return gcsreferentialBucket, diags
 }

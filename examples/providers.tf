@@ -1,3 +1,3 @@
-provider "cidr-reservator" {
-  reservator_bucket = "test-cidr-reservator"
+provider "gcsreferential" {
+  referential_bucket = "test-gcsreferential"
 }

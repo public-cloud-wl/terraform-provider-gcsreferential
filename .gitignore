@@ -25,7 +25,7 @@ website/node_modules
 *.test
 *.iml
 .terraform**
-
+terraform-provider-gcsreferential
 website/vendor
 
 # Test exclusions

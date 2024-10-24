@@ -1,9 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package main
 
 import (
 	"flag"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
-	"github.com/sbehl27-org/terraform-provider-cidr-reservator/internal/provider"
+	"github.com/public-cloud-wl/terraform-provider-gcsreferential/internal/provider"
 )
 
 // Run "go generate" to format example terraform files and generate the docs for the registry/website
@@ -25,7 +29,6 @@ var (
 	// commit  string = ""
 )
 
-// TODO: Implement terraform import!!!
 func main() {
 	var debugMode bool
 
@@ -36,7 +39,7 @@ func main() {
 		Debug: debugMode,
 
 		// TODO: update this string with the full name of your provider as used in your configs
-		ProviderAddr: "registry.terraform.io/hashicorp/cidr-reservator",
+		ProviderAddr: "registry.terraform.io/providers/public-cloud-wl/gcsreferential",
 
 		ProviderFunc: provider.New(version),
 	}

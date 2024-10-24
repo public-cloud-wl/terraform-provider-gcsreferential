@@ -4,20 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/sbehl27-org/terraform-provider-cidr-reservator/internal/provider/cidrCalculator"
-	"github.com/sbehl27-org/terraform-provider-cidr-reservator/internal/provider/connector"
 	"strconv"
 	"strings"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/public-cloud-wl/terraform-provider-gcsreferential/internal/provider/connector"
+	"github.com/public-cloud-wl/tools/cidrCalculator"
+	"github.com/public-cloud-wl/tools/utils"
 )
 
-func resourceServer() *schema.Resource {
+func networkRequest() *schema.Resource {
 	return &schema.Resource{
-		CreateContext: resourceServerCreate,
-		ReadContext:   resourceServerRead,
-		UpdateContext: resourceServerUpdate,
-		DeleteContext: resourceServerDelete,
+		CreateContext: networkRequestCreate,
+		ReadContext:   networkRequestRead,
+		UpdateContext: networkRequestUpdate,
+		DeleteContext: networkRequestDelete,
 
 		Schema: map[string]*schema.Schema{
 			"prefix_length": {
@@ -50,7 +52,7 @@ func importState(ctx context.Context, data *schema.ResourceData, i interface{}) 
 	reservatorBucket := idContent[0]
 	baseCidr := idContent[1]
 	netmaskId := idContent[2]
-	gcpConnector := connector.New(reservatorBucket, baseCidr)
+	gcpConnector := connector.NewNetwork(reservatorBucket, baseCidr)
 	networkConfig, err := gcpConnector.ReadRemote(ctx)
 	if err != nil {
 		return nil, err
@@ -68,7 +70,7 @@ func importState(ctx context.Context, data *schema.ResourceData, i interface{}) 
 
 func readRemote(ctx context.Context, data *schema.ResourceData, m interface{}) (*connector.NetworkConfig, *connector.GcpConnector, error) {
 	cidrProviderBucket := m.(string)
-	gcpConnector := connector.New(cidrProviderBucket, data.Get("base_cidr").(string))
+	gcpConnector := connector.NewNetwork(cidrProviderBucket, data.Get("base_cidr").(string))
 	networkConfig, err := gcpConnector.ReadRemote(ctx)
 	if err != nil {
 		if err.Error() == "storage: object doesn't exist" {
@@ -90,22 +92,9 @@ func readRemote(ctx context.Context, data *schema.ResourceData, m interface{}) (
 	return networkConfig, &gcpConnector, nil
 }
 
-func retry(toRetry func() error) error {
-	n := 0
-	var err error
-	for n < 4 {
-		err = toRetry()
-		if err == nil {
-			break
-		}
-		n++
-	}
-	return err
-}
-
-func resourceServerCreate(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
+func networkRequestCreate(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	err := retry(innerResourceServerCreate(ctx, data, m))
+	err := utils.Retry(innerResourceServerCreate(ctx, data, m))
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -138,6 +127,7 @@ func innerResourceServerCreate(ctx context.Context, data *schema.ResourceData, m
 			return err
 		}
 		networkConfig.Subnets[netmaskId] = nextNetmask
+		//err = gcpConnector.Recursiveutils.retryReadWrite
 		err = gcpConnector.WriteRemote(networkConfig, ctx)
 		if err != nil {
 			return err
@@ -151,13 +141,13 @@ func innerResourceServerCreate(ctx context.Context, data *schema.ResourceData, m
 	}
 }
 
-func resourceServerRead(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
+func networkRequestRead(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 	idContent := strings.Split(data.Id(), ":")
 	reservatorBucket := idContent[0]
 	baseCidr := idContent[1]
 	netmaskId := idContent[2]
-	gcpConnector := connector.New(reservatorBucket, baseCidr)
+	gcpConnector := connector.NewNetwork(reservatorBucket, baseCidr)
 	networkConfig, err := gcpConnector.ReadRemote(ctx)
 	if err != nil {
 		return diag.FromErr(err)
@@ -183,9 +173,9 @@ func resourceServerRead(ctx context.Context, data *schema.ResourceData, m interf
 	return diags
 }
 
-func resourceServerUpdate(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
+func networkRequestUpdate(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	err := retry(innerResourceServerUpdate(ctx, data, m))
+	err := utils.Retry(innerResourceServerUpdate(ctx, data, m))
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -242,9 +232,9 @@ func innerResourceServerUpdate(ctx context.Context, data *schema.ResourceData, m
 	}
 }
 
-func resourceServerDelete(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
+func networkRequestDelete(ctx context.Context, data *schema.ResourceData, m interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	err := retry(innerResourceServerDelete(ctx, data, m))
+	err := utils.Retry(innerResourceServerDelete(ctx, data, m))
 	if err != nil {
 		return diag.FromErr(err)
 	}
