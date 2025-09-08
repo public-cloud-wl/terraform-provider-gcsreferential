@@ -116,10 +116,8 @@ func readRemoteIdPool(ctx context.Context, data *IdPoolResourceModel, p GCSRefer
 	lockId, err := gcpConnector.WaitForlock(ctx, Timeout, existingLock...)
 	if len(existingLock) <= 0 && err == nil {
 		defer gcpConnector.Unlock(ctx, lockId)
-	} else {
-		if lockId != existingLock[0] {
-			defer gcpConnector.Unlock(ctx, lockId)
-		}
+	} else if len(existingLock) > 0 && lockId != existingLock[0] {
+		defer gcpConnector.Unlock(ctx, lockId)
 	}
 	if err == nil {
 		return gcpConnector.Read(ctx, &idpool)
@@ -134,10 +132,8 @@ func writeRemoteIdPool(ctx context.Context, data *IdPoolResourceModel, p GCSRefe
 	lockId, err := gcpConnector.WaitForlock(ctx, Timeout, existingLock...)
 	if len(existingLock) <= 0 && err == nil {
 		defer gcpConnector.Unlock(ctx, lockId)
-	} else {
-		if lockId != existingLock[0] {
-			defer gcpConnector.Unlock(ctx, lockId)
-		}
+	} else if len(existingLock) > 0 && lockId != existingLock[0] {
+		defer gcpConnector.Unlock(ctx, lockId)
 	}
 	//tflog.Debug(ctx, fmt.Sprintf("##### THIS IS ISSUE ##### :  %s", err.Error()))
 	if err == nil {
@@ -155,10 +151,8 @@ func deleteRemoteIdPool(ctx context.Context, data *IdPoolResourceModel, p GCSRef
 	lockId, err := gcpConnector.WaitForlock(ctx, Timeout, existingLock...)
 	if len(existingLock) <= 0 && err == nil {
 		defer gcpConnector.Unlock(ctx, lockId)
-	} else {
-		if lockId != existingLock[0] {
-			defer gcpConnector.Unlock(ctx, lockId)
-		}
+	} else if len(existingLock) > 0 && lockId != existingLock[0] {
+		defer gcpConnector.Unlock(ctx, lockId)
 	}
 	if err == nil {
 		return gcpConnector.Delete(ctx)
