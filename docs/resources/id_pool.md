@@ -3,7 +3,7 @@
 page_title: "gcsreferential_id_pool Resource - terraform-provider-gcsreferential"
 subcategory: ""
 description: |-
-  This resource allow you to declare a pool with a name that must be unique, you can then use idrequest to request an id from this idpool
+  This resource allow you to declare a pool with a name that must be unique, you can then use id_request to request an id from this id_pool
 ---
 
 # gcsreferential_id_pool (Resource)
@@ -36,5 +36,3 @@ resource "gcsreferential_id_pool" "example" {
 
 - `id` (String) The terraform id of the resource
 - `reservations` (Map of Number) The existing reservation made on this pool, it is a readonly field
-
-

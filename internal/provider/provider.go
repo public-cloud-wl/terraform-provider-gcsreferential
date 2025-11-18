@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -16,14 +15,12 @@ var _ provider.Provider = &GCSReferentialProvider{}
 /*var _ provider.ProviderWithFunctions = &GCSReferentialProvider{} */
 
 const ProviderName = "gcsreferential"
-const NumberOfRetry = int(10)
-const Timeout = time.Minute * 5
 
 type GCSReferentialProvider struct {
 	version string
 }
 
-// New function to create the provider
+// New function to create the provider.
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &GCSReferentialProvider{
@@ -33,7 +30,9 @@ func New(version string) func() provider.Provider {
 }
 
 type GCSReferentialProviderModel struct {
-	ReferentialBucket types.String `tfsdk:"referential_bucket"`
+	ReferentialBucket types.String  `tfsdk:"referential_bucket"`
+	TimeoutInMinutes  types.Int32   `tfsdk:"timeout_in_minutes"`
+	BackoffMultiplier types.Float32 `tfsdk:"backoff_multiplier"`
 }
 
 func (p *GCSReferentialProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -41,7 +40,7 @@ func (p *GCSReferentialProvider) Metadata(ctx context.Context, req provider.Meta
 	resp.Version = p.version
 }
 
-// Define the Provider schema
+// Define the Provider schema.
 func (p *GCSReferentialProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
@@ -49,11 +48,19 @@ func (p *GCSReferentialProvider) Schema(ctx context.Context, req provider.Schema
 				MarkdownDescription: "The GCS bucket name where the information from this provider will be stocked",
 				Required:            true,
 			},
+			"timeout_in_minutes": schema.Int32Attribute{
+				MarkdownDescription: "The GCS bucket name where the information from this provider will be stocked",
+				Optional:            true,
+			},
+			"backoff_multiplier": schema.Float32Attribute{
+				MarkdownDescription: "The GCS bucket name where the information from this provider will be stocked",
+				Optional:            true,
+			},
 		},
 	}
 }
 
-// Configure function for the provider
+// Configure function for the provider.
 func (p *GCSReferentialProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	var data GCSReferentialProviderModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -62,6 +69,12 @@ func (p *GCSReferentialProvider) Configure(ctx context.Context, req provider.Con
 	}
 	if data.ReferentialBucket.ValueString() == "" {
 		resp.Diagnostics.AddError("The provide must be set with referential_bucket argument", "")
+	}
+	if data.TimeoutInMinutes.IsNull() {
+		data.TimeoutInMinutes = types.Int32Value(5)
+	}
+	if data.BackoffMultiplier.IsNull() {
+		data.BackoffMultiplier = types.Float32Value(0.5)
 	}
 	resp.DataSourceData = data
 	resp.ResourceData = data

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/public-cloud-wl/tools/utils"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 )
@@ -75,6 +77,7 @@ func (gcp *GcpConnectorGeneric) Read(ctx context.Context, data interface{}) erro
 	}
 	rc, err := objectHandle.NewReader(ctx)
 	if err != nil {
+		tflog.Debug(ctx, fmt.Sprintf("Bucket Object does not exist with error : %s (%s)", gcp.FullFilePath, err.Error()))
 		return err
 	}
 	defer rc.Close()
@@ -82,7 +85,10 @@ func (gcp *GcpConnectorGeneric) Read(ctx context.Context, data interface{}) erro
 	if err != nil {
 		return err
 	}
-	json.Unmarshal(slurp, &data)
+	err = json.Unmarshal(slurp, &data)
+	if err != nil {
+		return err
+	}
 	tflog.Debug(ctx, fmt.Sprintf("THIS IS CURRENTLY READ : %s", string(slurp)))
 	return nil
 }
@@ -106,7 +112,10 @@ func (gcp *GcpConnectorGeneric) Write(ctx context.Context, data interface{}) err
 	if err != nil {
 		return err
 	}
-	_, _ = writer.Write(marshalled)
+	_, err = writer.Write(marshalled)
+	if err != nil {
+		return err
+	}
 	if err := writer.Close(); err != nil {
 		tflog.Error(ctx, "Failed to write file to GCP", map[string]interface{}{"error": err, "Generation": gcp.Generation, "Bucket": gcp.BucketName, "FilePath": gcp.FullFilePath})
 		return err
@@ -132,7 +141,7 @@ func (gcp *GcpConnectorGeneric) GetLockPath(ctx context.Context) string {
 }
 
 func (gcp *GcpConnectorGeneric) Lock(ctx context.Context) (uuid.UUID, error) {
-	tflog.Debug(ctx, fmt.Sprintf("ENTERING TO LOCK"))
+	tflog.Debug(ctx, "ENTERING TO LOCK")
 	client, err := getStorageClient(ctx)
 	if err != nil {
 		return uuid.Nil, err
@@ -172,6 +181,9 @@ func (gcp *GcpConnectorGeneric) Unlock(ctx context.Context, lockId uuid.UUID) er
 	bucket := client.Bucket(gcp.BucketName)
 	objectHandle := bucket.Object(lockPath)
 	_, err = objectHandle.Attrs(ctx)
+	if err != nil {
+		return err
+	}
 	rc, err := objectHandle.NewReader(ctx)
 	if err != nil {
 		return err
@@ -185,13 +197,15 @@ func (gcp *GcpConnectorGeneric) Unlock(ctx context.Context, lockId uuid.UUID) er
 	tflog.Debug(ctx, fmt.Sprintf("COMPARING LOCKID : %s and %s", lockId.String(), currentLockId))
 	if currentLockId == lockId.String() {
 		tflog.Debug(ctx, fmt.Sprintf("UNLOCKING LOCKID : %s", currentLockId))
-		return bucket.Object(lockPath).Delete(ctx)
+		// retry.
+		return utils.Retry(func() error { return bucket.Object(lockPath).Delete(ctx) }, 5)
 	} else {
+		tflog.Debug(ctx, fmt.Sprintf("LOCKID DOES NOT CORRESPOND: %s %s", currentLockId, lockId.String()))
 		return errors.New("The lock id does not correspond, cannot unlock it")
 	}
 }
 
-// Get the current lock ID if there is one at string format and send error if there is no lock, error will be nil if there is a lock that can be retrieve
+// Get the current lock ID if there is one at string format and send error if there is no lock, error will be nil if there is a lock that can be retrieve.
 func (gcp *GcpConnectorGeneric) GetCurrentLockId(ctx context.Context) (uuid.UUID, error) {
 	var err error
 	client, err := getStorageClient(ctx)
@@ -217,56 +231,63 @@ func (gcp *GcpConnectorGeneric) GetCurrentLockId(ctx context.Context) (uuid.UUID
 	return uuid.MustParse(string(slurp)), nil
 }
 
-// Wait for lock to be relase and create a new one
-func (gcp *GcpConnectorGeneric) WaitForlock(ctx context.Context, timeout time.Duration, existingLock ...uuid.UUID) (uuid.UUID, error) {
-	var currentTimePassed time.Duration
-	var sleepTime time.Duration
+// Wait for lock to be relase and create a new one.
+func (gcp *GcpConnectorGeneric) WaitForlock(ctx context.Context, timeout time.Duration, backoffMultiplier float32, existingLock ...uuid.UUID) (uuid.UUID, error) {
+	startTime := time.Now()
+	numberOfIteration := 0
 	var err error
-	var numberOfIteration int
-	var matchLock bool
 	var lock uuid.UUID
-	matchLock = false
-	numberOfIteration = 0
-	currentTimePassed, err = time.ParseDuration("0s")
-	for currentTimePassed < timeout {
+	const minBackoff = 1 * time.Second
+	const maxBackoff = 10 * time.Second
+	// Infinite loop break by return.
+	for {
+		if time.Since(startTime) > timeout {
+			tflog.Info(ctx, "CANNOT WAIT MORE FOR LOCK ")
+			return uuid.Nil, fmt.Errorf("CANNOT WAIT MORE FOR LOCK")
+		}
 		lock, err = gcp.GetCurrentLockId(ctx)
-		tflog.Debug(ctx, fmt.Sprintf("CURRENT LOCKID : %s", lock.String()))
-		if err != nil {
-			tflog.Debug(ctx, fmt.Sprintf("THERE IS NO LOCK SO BREAK FUNCTION OF WAITING : %s", lock.String()))
-			break
+		if err == nil {
+			tflog.Debug(ctx, fmt.Sprintf("CURRENT LOCKID : %s", lock.String()))
+			if len(existingLock) > 0 && lock == existingLock[0] {
+				tflog.Debug(ctx, fmt.Sprintf("COMPARED LOCKID ARE SAME: %s", existingLock[0].String()))
+				return lock, nil
+			}
+			tflog.Debug(ctx, fmt.Sprintf("LOCK WAS REQUEST BY ANOTHER PROCESS : %s", lock.String()))
 		} else {
-			if len(existingLock) > 0 {
-				tflog.Debug(ctx, fmt.Sprintf("COMPARED LOCKID : %s", existingLock[0].String()))
-				if lock == existingLock[0] {
-					matchLock = true
-					break
-				}
+			// There is no lock so try to get one.
+			tflog.Debug(ctx, "No lock detected so attempt to get one")
+			lock, err = gcp.Lock(ctx)
+			if err == nil {
+				tflog.Debug(ctx, fmt.Sprintf("LOCK RETRIEVED %s", lock.String()))
+				return lock, nil
 			}
-
+			tflog.Debug(ctx, "THERE IS ERROR CREATING NEW LOCK, WAIT AGAIN")
 		}
+		// Backoff sleep.
 		numberOfIteration++
-		sleepTime, _ = time.ParseDuration(fmt.Sprintf("%ds", numberOfIteration*1))
-		currentTimePassed += sleepTime
-		time.Sleep(sleepTime)
-	}
-	if matchLock {
-		tflog.Debug(ctx, fmt.Sprintf("LOCK MATCHED %s", lock.String()))
-		return lock, nil
-	} else {
-		lock, err = gcp.Lock(ctx)
-
-		if err != nil {
-			delta := timeout - currentTimePassed
-			tflog.Debug(ctx, fmt.Sprintf("THERE IS ERROR CREATING NEW LOCK WAIT AGAIN %s", delta.String()))
-			if delta > 0 {
-				return gcp.WaitForlock(ctx, delta, existingLock...)
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("CANNOT WAIT MORE FOR LOCK return error : %s", err.Error()))
-				return uuid.Nil, err
-			}
+		baseBackoff := time.Duration(numberOfIteration) * minBackoff
+		if baseBackoff > maxBackoff {
+			baseBackoff = maxBackoff
 		}
 
-		tflog.Debug(ctx, fmt.Sprintf("LOCK MISMATCHED, NEW : %s", lock.String()))
-		return lock, nil
+		jitter := time.Duration(rand.Int63n(int64(baseBackoff / 2)))
+		sleepTime := baseBackoff - (baseBackoff / 4) + jitter
+
+		// Do not sleep more than remaining time.
+		remainingTime := timeout - time.Since(startTime)
+		if sleepTime > remainingTime {
+			sleepTime = remainingTime
+		}
+		if sleepTime <= 0 {
+			return uuid.Nil, fmt.Errorf("TIMEOUT waiting for lock")
+		}
+		tflog.Debug(ctx, fmt.Sprintf("WAIT %s before new lock try (iteration %d)", sleepTime, numberOfIteration))
+
+		select {
+		case <-time.After(sleepTime):
+			time.Sleep(sleepTime)
+		case <-ctx.Done():
+			return uuid.Nil, fmt.Errorf("Context canceled while waiting for lock: %w", ctx.Err())
+		}
 	}
 }
