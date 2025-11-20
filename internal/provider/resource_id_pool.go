@@ -61,9 +61,6 @@ func (r *IdPoolResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "The name of the pool, it must be unique for the provider. If you change it, the pool will be destroyed and recreate",
 				Optional:            false,
 				Required:            true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
 			},
 			"start_from": schema.Int64Attribute{
 				MarkdownDescription: "The first id of the created pool, if you not set it it will be set to 1",
@@ -268,11 +265,121 @@ func innerPoolRead(ctx context.Context, data *IdPoolResourceModel, p GCSReferent
 
 func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data IdPoolResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	var newData IdPoolResourceModel
+	var pool IdPoolTools.IDPool
+	var nullstruct struct{}
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &newData)...)
 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	gcpConnector := getPoolConnector(ctx, &data, r.providerData, &pool)
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
+
+	if err != nil {
+		tflog.Error(ctx, fmt.Sprintf("Fail to acquire lock: %s", err.Error()))
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Fail to acquire lock: %s", err.Error()))
+	}
+
+	defer func() {
+		unlockErr := gcpConnector.Unlock(ctx, lockId)
+		if unlockErr != nil {
+			tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.Name, lockId))
+			// As we are in a defer function (at the end) need to chek last error.
+			if err == nil {
+				// No error.
+				err = fmt.Errorf("Failed to unlock %s (%s)", data.Name.ValueString(), lockId)
+			} else {
+				err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Name.ValueString(), lockId, err.Error())
+			}
+		} else {
+			tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Name, lockId))
+		}
+	}()
+
+	err = readRemoteIdPool(ctx, &data, r.providerData, &pool, lockId)
+	if err != nil {
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot find id_pool: %s on %s ", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+	}
+
+	// Make changes.
+	namedChanged := data.Name != newData.Name
+	start_from_changed := data.StartFrom != newData.StartFrom
+	end_to_changed := data.EndTo != newData.EndTo
+
+	if start_from_changed || end_to_changed {
+
+		// Check members.
+		for k, v := range pool.Members {
+			if v < IdPoolTools.ID(newData.StartFrom.ValueInt64()) || v > IdPoolTools.ID(newData.EndTo.ValueInt64()) {
+				tflog.Error(ctx, fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
+				resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
+				return
+			}
+		}
+
+		pool.StartFrom = IdPoolTools.ID(newData.StartFrom.ValueInt64())
+		pool.EndTo = IdPoolTools.ID(newData.EndTo.ValueInt64())
+
+		// start_from change
+		if newData.StartFrom.ValueInt64() < data.StartFrom.ValueInt64() {
+			// Add new IDs
+			loopIndex := newData.StartFrom.ValueInt64()
+			for loopIndex < data.EndTo.ValueInt64() {
+				pool.IdCache.Ids[IdPoolTools.ID(loopIndex)] = nullstruct
+				loopIndex++
+			}
+		} else {
+			// Remove no more available IDs.
+			loopIndex := data.StartFrom.ValueInt64()
+			for loopIndex < newData.StartFrom.ValueInt64() {
+				delete(pool.IdCache.Ids, IdPoolTools.ID(loopIndex))
+				loopIndex++
+			}
+		}
+		// end_to change
+		if newData.EndTo.ValueInt64() > data.EndTo.ValueInt64() {
+			// Add new IDs
+			loopIndex := data.EndTo.ValueInt64() + 1
+			for loopIndex <= newData.EndTo.ValueInt64() {
+				pool.IdCache.Ids[IdPoolTools.ID(loopIndex)] = nullstruct
+				loopIndex++
+			}
+		} else {
+			// Remove no more available IDs.
+			loopIndex := data.EndTo.ValueInt64()
+			for loopIndex > newData.EndTo.ValueInt64() {
+				delete(pool.IdCache.Ids, IdPoolTools.ID(loopIndex))
+				loopIndex--
+			}
+		}
+	}
+
+	// Write file.
+	err = writeRemoteIdPool(ctx, &newData, r.providerData, &pool, lockId)
+	if err != nil {
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot write new id_pool content for: %s on %s ", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+	}
+
+	if namedChanged {
+		// Remove old file.
+		err = deleteRemoteIdPool(ctx, &data, r.providerData, lockId)
+		if err != nil {
+			resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot remove old id_pool %s after duplicate into new one %s on %s", data.Name.ValueString(), newData.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+		}
+	}
+	// Save data into Terraform state.
+	newData.Reservations = data.Reservations
+	resp.Diagnostics.Append(resp.State.Set(ctx, &newData)...)
+
 }
 
 func (r *IdPoolResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
