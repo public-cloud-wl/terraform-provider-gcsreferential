@@ -44,5 +44,3 @@ resource "gcsreferential_network_request" "network_request2" {
 ### Read-Only
 
 - `netmask` (String) The reserved netmask as full cidr, for example 10.12.13.0/24
-
-

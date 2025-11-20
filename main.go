@@ -9,7 +9,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/public-cloud-wl/terraform-provider-gcsreferential/internal/provider"
+	"github.com/terraform-provider-gcsreferential/internal/provider"
 )
 
 // Run "go generate" to format example terraform files and generate the docs for the registry/website
@@ -23,12 +23,9 @@ import (
 //go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
 
 var (
-	// these will be set by the goreleaser configuration
-	// to appropriate values for the compiled binary
+	// these will be set by the goreleaser configuration.
+	// to appropriate values for the compiled binary.
 	version string = "dev"
-
-	// goreleaser can also pass the specific commit if you want
-	// commit  string = ""
 )
 
 func main() {

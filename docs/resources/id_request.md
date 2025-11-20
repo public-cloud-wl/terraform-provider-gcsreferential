@@ -40,5 +40,3 @@ resource "gcsreferential_id_request" "example2" {
 ### Read-Only
 
 - `requested_id` (Number) The requested id from the pool, a free one that will be reserved for this resource
-
-

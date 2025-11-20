@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -12,8 +13,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/public-cloud-wl/terraform-provider-gcsreferential/internal/provider/connector"
 	cidrCalculator "github.com/public-cloud-wl/tools/cidrCalculator"
+	"github.com/terraform-provider-gcsreferential/internal/provider/connector"
 )
 
 type networkRequestResource struct {
@@ -81,9 +82,7 @@ func (r *networkRequestResource) Configure(ctx context.Context, req resource.Con
 
 func getNetworkConnector(ctx context.Context, data *networkRequestResourceModel, p GCSReferentialProviderModel, networkConfig *NetworkConfig) connector.GcpConnectorNetwork {
 	gcpConnector := connector.NewNetwork(p.ReferentialBucket.ValueString(), data.BaseCidr.ValueString())
-	// do a read in a fake resource to get the generation updated
-	var networkconfig NetworkConfig
-	err := gcpConnector.Read(ctx, &networkconfig)
+	err := gcpConnector.Read(ctx, networkConfig)
 	if err != nil {
 		tflog.Debug(ctx, fmt.Sprintf("Error on reading network_request file for cidr : %s", data.BaseCidr.ValueString()))
 	}
@@ -92,36 +91,61 @@ func getNetworkConnector(ctx context.Context, data *networkRequestResourceModel,
 
 func readRemoteNetwork(ctx context.Context, data *networkRequestResourceModel, p GCSReferentialProviderModel, networkConfig *NetworkConfig, existingLock ...uuid.UUID) error {
 	gcpConnector := getNetworkConnector(ctx, data, p, networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, Timeout, existingLock...)
-	if len(existingLock) <= 0 && err == nil {
-		defer gcpConnector.Unlock(ctx, lockId)
-	} else {
-		if lockId != existingLock[0] {
-			defer gcpConnector.Unlock(ctx, lockId)
-		}
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
+	if err != nil {
+		return fmt.Errorf("Fail to acquire lock: %w", err)
 	}
-	if err == nil {
-		return gcpConnector.Read(ctx, &networkConfig)
-	} else {
-		return err
+
+	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
+	if shouldUnlock {
+		defer func() {
+			unlockErr := gcpConnector.Unlock(ctx, lockId)
+			if unlockErr != nil {
+				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.BaseCidr, lockId))
+				// As we are in a defer function (at the end) need to chek last error.
+				if err == nil {
+					// No error.
+					err = fmt.Errorf("Failed to unlock %s (%s)", data.BaseCidr, lockId)
+				} else {
+					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.BaseCidr, lockId, err.Error())
+				}
+			} else {
+				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.BaseCidr, lockId))
+			}
+		}()
 	}
+
+	err = gcpConnector.Read(ctx, &networkConfig)
+	return err
 }
 
 func writeRemoteNetwork(ctx context.Context, data *networkRequestResourceModel, p GCSReferentialProviderModel, networkConfig *NetworkConfig, existingLock ...uuid.UUID) error {
 	gcpConnector := getNetworkConnector(ctx, data, p, networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, Timeout, existingLock...)
-	if len(existingLock) <= 0 && err == nil {
-		defer gcpConnector.Unlock(ctx, lockId)
-	} else {
-		if lockId != existingLock[0] {
-			defer gcpConnector.Unlock(ctx, lockId)
-		}
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
+	if err != nil {
+		return fmt.Errorf("Fail to acquire lock: %w", err)
 	}
-	if err == nil {
-		return gcpConnector.Write(ctx, networkConfig)
-	} else {
-		return err
+
+	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
+	if shouldUnlock {
+		defer func() {
+			unlockErr := gcpConnector.Unlock(ctx, lockId)
+			if unlockErr != nil {
+				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.BaseCidr, lockId))
+				// As we are in a defer function (at the end) need to chek last error.
+				if err == nil {
+					// No error.
+					err = fmt.Errorf("Failed to unlock %s (%s)", data.BaseCidr, lockId)
+				} else {
+					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.BaseCidr, lockId, err.Error())
+				}
+			} else {
+				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.BaseCidr, lockId))
+			}
+		}()
 	}
+	err = gcpConnector.Write(ctx, networkConfig)
+	return err
 }
 
 func (r *networkRequestResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -132,12 +156,17 @@ func (r *networkRequestResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 	gcpConnector := getNetworkConnector(ctx, &data, r.providerData, &networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, Timeout)
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot put lock to create the network_request :", err.Error())
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		err = gcpConnector.Unlock(ctx, lockId)
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Cannot unlock %s: %s", gcpConnector.BaseCidrRange, err.Error()), data.Id.ValueString())
+		}
+	}()
 	err = readRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
 	if err != nil {
 		// file does not exist so create empty network config
@@ -180,12 +209,17 @@ func (r *networkRequestResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 	gcpConnector := getNetworkConnector(ctx, &data, r.providerData, &networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, Timeout)
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot put lock to create the network_request :", err.Error())
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		err = gcpConnector.Unlock(ctx, lockId)
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Cannot unlock %s: %s", gcpConnector.BaseCidrRange, err.Error()), data.Id.ValueString())
+		}
+	}()
 	err = readRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
 	if err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot Read %s in %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString()), err.Error())
@@ -220,12 +254,17 @@ func (r *networkRequestResource) Delete(ctx context.Context, req resource.Delete
 		return
 	}
 	gcpConnector := getNetworkConnector(ctx, &data, r.providerData, &networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, Timeout)
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
 		resp.Diagnostics.AddError("Cannot put lock to create the network_request :", err.Error())
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		err = gcpConnector.Unlock(ctx, lockId)
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Cannot unlock %s: %s", gcpConnector.BaseCidrRange, err.Error()), data.Id.ValueString())
+		}
+	}()
 	err = readRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
 	if err != nil {
 		resp.Diagnostics.AddError(fmt.Sprintf("Cannot Read %s in %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString()), err.Error())
@@ -244,6 +283,6 @@ func (r *networkRequestResource) Delete(ctx context.Context, req resource.Delete
 	}
 }
 
-func (r *networkRequestResource) importState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+func (r *networkRequestResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

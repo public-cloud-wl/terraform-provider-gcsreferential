@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -92,12 +94,26 @@ func (r *IdRequestResource) Create(ctx context.Context, req resource.CreateReque
 	}
 	poolModel.Name = data.Pool
 	gcpConnector := getPoolConnector(ctx, &poolModel, r.providerData, &pool)
-	lockId, err = gcpConnector.WaitForlock(ctx, Timeout)
+	lockId, err = gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
 		resp.Diagnostics.AddError("id_request creation error", "Cannot put lock to create the id_request")
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		unlockErr := gcpConnector.Unlock(ctx, lockId)
+		if unlockErr != nil {
+			tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.Pool.String(), lockId))
+			// As we are in a defer function (at the end) need to chek last error.
+			if err == nil {
+				// No error.
+				err = fmt.Errorf("Failed to unlock %s (%s)", data.Pool.String(), lockId)
+			} else {
+				err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Pool.String(), lockId, err.Error())
+			}
+		} else {
+			tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Pool.String(), lockId))
+		}
+	}()
 	err = readRemoteIdPool(ctx, &poolModel, r.providerData, &pool, lockId)
 	if err != nil {
 		resp.Diagnostics.AddError("id_request creation error", "Cannot find pool to make the id_request on")
@@ -134,16 +150,20 @@ func (r *IdRequestResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 	poolModel.Name = data.Pool
+	tflog.Debug(ctx, fmt.Sprintf("Start read id_request %s", data.Id))
 	err = readRemoteIdPool(ctx, &poolModel, r.providerData, &pool, lockId)
 	if err != nil {
 		resp.Diagnostics.AddError("id_request read error", "Cannot find pool to make the id_request on")
 		return
 	}
+	tflog.Debug(ctx, fmt.Sprintf("Get value %s", data.Id))
 	value, ok := pool.Members[data.Id.ValueString()]
 	if !ok {
+		tflog.Debug(ctx, "WAS NOT ABLE TO FIND MUMBER")
 		resp.Diagnostics.AddError("id_request read error", "Cannot find your id_request on the pool")
 		return
 	}
+	tflog.Debug(ctx, fmt.Sprintf("SAVE THE ID %s", value))
 	data.RequestedId = types.Int64Value(int64(value))
 
 	// Save data into Terraform state
@@ -179,12 +199,27 @@ func (r *IdRequestResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 	poolModel.Name = data.Pool
 	gcpConnector := getPoolConnector(ctx, &poolModel, r.providerData, &pool)
-	lockId, err = gcpConnector.WaitForlock(ctx, Timeout)
+	lockId, err = gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
 		resp.Diagnostics.AddError("id_request delete error", "Cannot put lock to create the id_request :")
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+
+	defer func() {
+		unlockErr := gcpConnector.Unlock(ctx, lockId)
+		if unlockErr != nil {
+			tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.Pool.String(), lockId))
+			// As we are in a defer function (at the end) need to chek last error.
+			if err == nil {
+				// No error.
+				err = fmt.Errorf("Failed to unlock %s (%s)", data.Pool.String(), lockId)
+			} else {
+				err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Pool.String(), lockId, err.Error())
+			}
+		} else {
+			tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Pool.String(), lockId))
+		}
+	}()
 
 	localerr := readRemoteIdPool(ctx, &poolModel, r.providerData, &pool, lockId)
 	if localerr != nil {
@@ -197,7 +232,7 @@ func (r *IdRequestResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 	pool.Release(value)
-	poolJson, _ := json.Marshal(pool)
+	poolJson, _ := json.Marshal(&pool)
 	tflog.Debug(ctx, string(poolJson))
 	err = writeRemoteIdPool(ctx, &poolModel, r.providerData, &pool, lockId)
 
