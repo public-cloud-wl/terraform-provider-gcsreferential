@@ -267,7 +267,6 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 	var data IdPoolResourceModel
 	var newData IdPoolResourceModel
 	var pool IdPoolTools.IDPool
-	var nullstruct struct{}
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &newData)...)
 
@@ -333,15 +332,15 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 		if newData.StartFrom.ValueInt64() < data.StartFrom.ValueInt64() {
 			// Add new IDs
 			loopIndex := newData.StartFrom.ValueInt64()
-			for loopIndex < data.EndTo.ValueInt64() {
-				pool.IdCache.Ids[IdPoolTools.ID(loopIndex)] = nullstruct
+			for loopIndex < data.StartFrom.ValueInt64() {
+				pool.Insert(IdPoolTools.ID(loopIndex))
 				loopIndex++
 			}
 		} else {
 			// Remove no more available IDs.
 			loopIndex := data.StartFrom.ValueInt64()
 			for loopIndex < newData.StartFrom.ValueInt64() {
-				delete(pool.IdCache.Ids, IdPoolTools.ID(loopIndex))
+				pool.Remove(IdPoolTools.ID(loopIndex))
 				loopIndex++
 			}
 		}
@@ -350,14 +349,14 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 			// Add new IDs
 			loopIndex := data.EndTo.ValueInt64() + 1
 			for loopIndex <= newData.EndTo.ValueInt64() {
-				pool.IdCache.Ids[IdPoolTools.ID(loopIndex)] = nullstruct
+				pool.Insert(IdPoolTools.ID(loopIndex))
 				loopIndex++
 			}
 		} else {
 			// Remove no more available IDs.
 			loopIndex := data.EndTo.ValueInt64()
 			for loopIndex > newData.EndTo.ValueInt64() {
-				delete(pool.IdCache.Ids, IdPoolTools.ID(loopIndex))
+				pool.Remove(IdPoolTools.ID(loopIndex))
 				loopIndex--
 			}
 		}
@@ -397,7 +396,8 @@ func (r *IdPoolResource) Delete(ctx context.Context, req resource.DeleteRequest,
 }
 
 func (r *IdPoolResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
 
 func idPoolFromToolToModel(data *IdPoolResourceModel, pool *IdPoolTools.IDPool, p GCSReferentialProviderModel) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,7 +122,7 @@ func (r *IdRequestResource) Create(ctx context.Context, req resource.CreateReque
 	}
 	_, ok := pool.Members[data.Id.ValueString()]
 	if ok {
-		resp.Diagnostics.AddError("id_request creation error", "The if of your id_request is already present in the pool, be sure you did not make any mistake, or consider to import")
+		resp.Diagnostics.AddError("id_request creation error", "The id of your id_request is already present in the pool, be sure you did not make any mistake, or consider to import")
 		return
 	}
 	generatedId := pool.AllocateID(data.Id.ValueString())
@@ -144,14 +145,13 @@ func (r *IdRequestResource) Read(ctx context.Context, req resource.ReadRequest, 
 	var err error
 	var poolModel IdPoolResourceModel
 	var pool IdPoolTools.IDPool
-	var lockId uuid.UUID
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	poolModel.Name = data.Pool
 	tflog.Debug(ctx, fmt.Sprintf("Start read id_request %s", data.Id))
-	err = readRemoteIdPool(ctx, &poolModel, r.providerData, &pool, lockId)
+	err = readRemoteIdPool(ctx, &poolModel, r.providerData, &pool)
 	if err != nil {
 		resp.Diagnostics.AddError("id_request read error", "Cannot find pool to make the id_request on")
 		return
@@ -290,5 +290,14 @@ func (r *IdRequestResource) Delete(ctx context.Context, req resource.DeleteReque
 }
 
 func (r *IdRequestResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	idParts := strings.Split(req.ID, "/")
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		resp.Diagnostics.AddError(
+			"Unexpected Import Identifier",
+			fmt.Sprintf("Expected import identifier with format: pool_name/request_id. Got: %q", req.ID),
+		)
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pool"), idParts[0])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), idParts[1])...)
 }
