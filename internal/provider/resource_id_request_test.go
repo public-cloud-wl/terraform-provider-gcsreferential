@@ -56,7 +56,7 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			},
 			// Remove all requests but keep the static one
 			{
-				Config: testAccIdRequestResourceConfig(poolName, 1, 10, nullList),
+				Config: testAccIdRequestResourceConfig(poolName, 1, 11, nullList),
 			},
 			{
 				RefreshState: true,
