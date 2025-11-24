@@ -47,19 +47,20 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			{
 				Config: testAccIdRequestResourceConfig(poolName, 1, 11, reqIds5),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test_req5", "requested_id"),
+					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-5", "requested_id"),
 				),
 			},
 			{
 				RefreshState: true,
-				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "5"),
+				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "6"),
 			},
-			// Remove all requests
+			// Remove all requests but keep the static one
 			{
 				Config: testAccIdRequestResourceConfig(poolName, 1, 10, nullList),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations", "0"),
-				),
+			},
+			{
+				RefreshState: true,
+				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "1"),
 			},
 		},
 	})
