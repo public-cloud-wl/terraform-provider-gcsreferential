@@ -8,6 +8,7 @@
 ### Fixed
 
 - No more duplicate ID
+- No more issue on GCS error for rate limit
 
 ## 1.0.8
 

@@ -15,9 +15,9 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 		t.Skip("GCS_REFERENTIAL_BUCKET environment variable not set, skipping acceptance test")
 	}
 
-	reqIds10 := generateRequestIds(10)
-	reqIds11 := generateRequestIds(11)
-	reqIds12 := generateRequestIds(12)
+	reqIds100 := generateRequestIds(100)
+	reqIds101 := generateRequestIds(101)
+	reqIds102 := generateRequestIds(102)
 	reqIds5 := generateRequestIds(5)
 	var nullList []string
 
@@ -26,7 +26,7 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create a pool and 11 requests (10 generated + 1 static)
 			{
-				Config: testAccIdRequestResourceConfig(2, 12, reqIds10),
+				Config: testAccIdRequestResourceConfig(2, 102, reqIds100),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "name", "test-pool-for-requests-large"),
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test_req2", "requested_id"),
@@ -35,16 +35,16 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			// Check after refresh there is 10 + 1 reservations
 			{
 				RefreshState: true,
-				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "11"),
+				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "101"),
 			},
 			// Check pool is full
 			{
-				Config:      testAccIdRequestResourceConfig(2, 12, reqIds11),
+				Config:      testAccIdRequestResourceConfig(2, 102, reqIds101),
 				ExpectError: regexp.MustCompile("There is no more id available in the pool"),
 			},
 			// Check extend pool and can book 2 new request dynamic
 			{
-				Config: testAccIdRequestResourceConfig(1, 13, reqIds12),
+				Config: testAccIdRequestResourceConfig(1, 103, reqIds102),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-11", "requested_id"),
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-12", "requested_id"),
@@ -52,7 +52,7 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			},
 			// Update: remove to keep 5 + 1 requests + resize down the pool
 			{
-				Config: testAccIdRequestResourceConfig(1, 13, reqIds5),
+				Config: testAccIdRequestResourceConfig(1, 103, reqIds5),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-5", "requested_id"),
 				),
@@ -63,7 +63,7 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			},
 			// Remove all requests but keep the static one
 			{
-				Config: testAccIdRequestResourceConfig(1, 11, nullList),
+				Config: testAccIdRequestResourceConfig(1, 101, nullList),
 			},
 			{
 				RefreshState: true,
