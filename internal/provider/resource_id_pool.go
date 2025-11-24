@@ -233,51 +233,24 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 	end_to_changed := data.EndTo != newData.EndTo
 
 	if start_from_changed || end_to_changed {
+		currentMembers := cachedPool.Pool.Members
 
 		// Check members.
-		for k, v := range cachedPool.Pool.Members {
+		for k, v := range currentMembers {
 			if v < IdPoolTools.ID(newData.StartFrom.ValueInt64()) || v > IdPoolTools.ID(newData.EndTo.ValueInt64()) {
 				tflog.Error(ctx, fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
 				resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
 				return
 			}
 		}
-
-		cachedPool.Pool.StartFrom = IdPoolTools.ID(newData.StartFrom.ValueInt64())
-		cachedPool.Pool.EndTo = IdPoolTools.ID(newData.EndTo.ValueInt64())
-
-		// start_from change
-		if newData.StartFrom.ValueInt64() < data.StartFrom.ValueInt64() {
-			// Add new IDs
-			loopIndex := newData.StartFrom.ValueInt64()
-			for loopIndex < data.StartFrom.ValueInt64() {
-				cachedPool.Pool.Insert(IdPoolTools.ID(loopIndex))
-				loopIndex++
-			}
-		} else {
-			// Remove no more available IDs.
-			loopIndex := data.StartFrom.ValueInt64()
-			for loopIndex < newData.StartFrom.ValueInt64() {
-				cachedPool.Pool.Remove(IdPoolTools.ID(loopIndex))
-				loopIndex++
-			}
+		// Rebuild the pool from scratch with the new range and existing members.
+		// This is much more robust than trying to patch the existing pool's free list.
+		newPool := *IdPoolTools.NewIDPool(IdPoolTools.ID(newData.StartFrom.ValueInt64()), IdPoolTools.ID(newData.EndTo.ValueInt64()))
+		for _, allocatedID := range currentMembers {
+			newPool.Remove(allocatedID)
 		}
-		// end_to change
-		if newData.EndTo.ValueInt64() > data.EndTo.ValueInt64() {
-			// Add new IDs
-			loopIndex := data.EndTo.ValueInt64() + 1
-			for loopIndex <= newData.EndTo.ValueInt64() {
-				cachedPool.Pool.Insert(IdPoolTools.ID(loopIndex))
-				loopIndex++
-			}
-		} else {
-			// Remove no more available IDs.
-			loopIndex := data.EndTo.ValueInt64()
-			for loopIndex > newData.EndTo.ValueInt64() {
-				cachedPool.Pool.Remove(IdPoolTools.ID(loopIndex))
-				loopIndex--
-			}
-		}
+		newPool.Members = currentMembers
+		cachedPool.Pool = &newPool
 	}
 
 	newConnector := gcpConnector
