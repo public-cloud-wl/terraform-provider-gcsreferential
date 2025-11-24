@@ -113,7 +113,11 @@ func (r *IdPoolResource) Create(ctx context.Context, req resource.CreateRequest,
 		resp.Diagnostics.AddError("id_pool create error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock pool %s, manual intervention may be required to remove lock file: %s", data.Name.ValueString(), err.Error()))
+		}
+	}()
 
 	// Use the caching helper to check for existence.
 	_, err = getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
@@ -144,7 +148,10 @@ func (r *IdPoolResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	// After a successful write, the pool is created. We can warm up the cache.
 	// The lock is still held, so this is safe.
-	getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
+	if _, err := getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector); err != nil {
+		tflog.Warn(ctx, fmt.Sprintf("Failed to warm cache for pool %s after creation: %s", data.Name.ValueString(), err.Error()))
+		resp.Diagnostics.AddWarning("id_pool create warning", fmt.Sprintf("Failed to warm cache for pool %s after creation: %s", data.Name.ValueString(), err.Error()))
+	}
 
 	data.Id = data.Name
 	emptyGoMap := map[string]attr.Value{}
@@ -205,7 +212,11 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock pool %s, manual intervention may be required to remove lock file: %s", data.Name.ValueString(), err.Error()))
+		}
+	}()
 
 	cachedPool, err := getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
 	if err != nil {
@@ -319,7 +330,11 @@ func (r *IdPoolResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		resp.Diagnostics.AddError("id_pool delete error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock pool %s, manual intervention may be required to remove lock file: %s", data.Name.ValueString(), err.Error()))
+		}
+	}()
 
 	err = gcpConnector.Delete(ctx)
 	if err != nil && !errors.Is(err, storage.ErrObjectNotExist) {

@@ -95,7 +95,11 @@ func (r *networkRequestResource) Create(ctx context.Context, req resource.Create
 		resp.Diagnostics.AddError("network_request creation error", fmt.Sprintf("Cannot acquire lock for base_cidr %s: %s", data.BaseCidr.ValueString(), err.Error()))
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock network config for %s, manual intervention may be required to remove lock file: %s", data.BaseCidr.ValueString(), err.Error()))
+		}
+	}()
 
 	var networkConfig NetworkConfig
 	err = gcpConnector.Read(ctx, &networkConfig)
@@ -189,7 +193,11 @@ func (r *networkRequestResource) Delete(ctx context.Context, req resource.Delete
 		resp.Diagnostics.AddError("network_request delete error", fmt.Sprintf("Cannot acquire lock for base_cidr %s: %s", data.BaseCidr.ValueString(), err.Error()))
 		return
 	}
-	defer gcpConnector.Unlock(ctx, lockId)
+	defer func() {
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock network config for %s, manual intervention may be required to remove lock file: %s", data.BaseCidr.ValueString(), err.Error()))
+		}
+	}()
 
 	var networkConfig NetworkConfig
 	err = gcpConnector.Read(ctx, &networkConfig)
