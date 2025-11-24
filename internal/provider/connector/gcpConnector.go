@@ -120,8 +120,23 @@ func (gcp *GcpConnectorGeneric) Write(ctx context.Context, data interface{}) err
 		tflog.Error(ctx, "Failed to write file to GCP", map[string]interface{}{"error": err, "Generation": gcp.Generation, "Bucket": gcp.BucketName, "FilePath": gcp.FullFilePath})
 		return err
 	}
+	// After successful close, update generation from the writer's attributes
+	gcp.Generation = writer.Attrs().Generation
 	tflog.Debug(ctx, fmt.Sprintf("THIS IS CURRENTLY WRITE : %s", string(marshalled)))
 	return nil
+}
+
+func (gcp *GcpConnectorGeneric) GetAttrs(ctx context.Context) (*storage.ObjectAttrs, error) {
+	client, err := getStorageClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	bucket := client.Bucket(gcp.BucketName)
+	objectHandle := bucket.Object(gcp.FullFilePath)
+
+	return objectHandle.Attrs(ctx)
 }
 
 func (gcp *GcpConnectorGeneric) Delete(ctx context.Context) error {

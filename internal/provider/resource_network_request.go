@@ -2,10 +2,10 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -13,12 +13,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+
+	"cloud.google.com/go/storage"
 	cidrCalculator "github.com/public-cloud-wl/tools/cidrCalculator"
 	"github.com/terraform-provider-gcsreferential/internal/provider/connector"
 )
 
 type networkRequestResource struct {
-	providerData GCSReferentialProviderModel
+	providerData *GCSReferentialProviderModel
 }
 
 // Metadata implements resource.Resource.
@@ -73,107 +75,43 @@ func (r *networkRequestResource) Configure(ctx context.Context, req resource.Con
 	if req.ProviderData == nil {
 		return
 	}
-	providerData, ok := req.ProviderData.(GCSReferentialProviderModel)
+	providerData, ok := req.ProviderData.(*GCSReferentialProviderModel)
 	if !ok {
-		resp.Diagnostics.AddError("Invalid provider data ", "")
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *GCSReferentialProviderModel, got: %T. Please report this issue to the provider developers.", req.ProviderData))
+		return
 	}
 	r.providerData = providerData
 }
 
-func getNetworkConnector(ctx context.Context, data *networkRequestResourceModel, p GCSReferentialProviderModel, networkConfig *NetworkConfig) connector.GcpConnectorNetwork {
-	gcpConnector := connector.NewNetwork(p.ReferentialBucket.ValueString(), data.BaseCidr.ValueString())
-	err := gcpConnector.Read(ctx, networkConfig)
-	if err != nil {
-		tflog.Debug(ctx, fmt.Sprintf("Error on reading network_request file for cidr : %s", data.BaseCidr.ValueString()))
-	}
-	return gcpConnector
-}
-
-func readRemoteNetwork(ctx context.Context, data *networkRequestResourceModel, p GCSReferentialProviderModel, networkConfig *NetworkConfig, existingLock ...uuid.UUID) error {
-	gcpConnector := getNetworkConnector(ctx, data, p, networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
-	if err != nil {
-		return fmt.Errorf("Fail to acquire lock: %w", err)
-	}
-
-	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
-	if shouldUnlock {
-		defer func() {
-			unlockErr := gcpConnector.Unlock(ctx, lockId)
-			if unlockErr != nil {
-				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.BaseCidr, lockId))
-				// As we are in a defer function (at the end) need to chek last error.
-				if err == nil {
-					// No error.
-					err = fmt.Errorf("Failed to unlock %s (%s)", data.BaseCidr, lockId)
-				} else {
-					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.BaseCidr, lockId, err.Error())
-				}
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.BaseCidr, lockId))
-			}
-		}()
-	}
-
-	err = gcpConnector.Read(ctx, &networkConfig)
-	return err
-}
-
-func writeRemoteNetwork(ctx context.Context, data *networkRequestResourceModel, p GCSReferentialProviderModel, networkConfig *NetworkConfig, existingLock ...uuid.UUID) error {
-	gcpConnector := getNetworkConnector(ctx, data, p, networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
-	if err != nil {
-		return fmt.Errorf("Fail to acquire lock: %w", err)
-	}
-
-	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
-	if shouldUnlock {
-		defer func() {
-			unlockErr := gcpConnector.Unlock(ctx, lockId)
-			if unlockErr != nil {
-				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.BaseCidr, lockId))
-				// As we are in a defer function (at the end) need to chek last error.
-				if err == nil {
-					// No error.
-					err = fmt.Errorf("Failed to unlock %s (%s)", data.BaseCidr, lockId)
-				} else {
-					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.BaseCidr, lockId, err.Error())
-				}
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.BaseCidr, lockId))
-			}
-		}()
-	}
-	err = gcpConnector.Write(ctx, networkConfig)
-	return err
-}
-
 func (r *networkRequestResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data networkRequestResourceModel
-	var networkConfig NetworkConfig
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	gcpConnector := getNetworkConnector(ctx, &data, r.providerData, &networkConfig)
+	gcpConnector := connector.NewNetwork(r.providerData.ReferentialBucket.ValueString(), data.BaseCidr.ValueString())
 	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
-		resp.Diagnostics.AddError("Cannot put lock to create the network_request :", err.Error())
+		resp.Diagnostics.AddError("network_request creation error", fmt.Sprintf("Cannot acquire lock for base_cidr %s: %s", data.BaseCidr.ValueString(), err.Error()))
 		return
 	}
 	defer func() {
-		err = gcpConnector.Unlock(ctx, lockId)
-		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Cannot unlock %s: %s", gcpConnector.BaseCidrRange, err.Error()), data.Id.ValueString())
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock network config for %s, manual intervention may be required to remove lock file: %s", data.BaseCidr.ValueString(), err.Error()))
 		}
 	}()
-	err = readRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
-	if err != nil {
-		// file does not exist so create empty network config
-		networkConfig = NetworkConfig{
-			Subnets: make(map[string]string),
-		}
+
+	var networkConfig NetworkConfig
+	err = gcpConnector.Read(ctx, &networkConfig)
+	if err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
+		resp.Diagnostics.AddError("network_request creation error", fmt.Sprintf("Failed to read network config for %s: %s", data.BaseCidr.ValueString(), err.Error()))
+		return
 	}
+
+	if networkConfig.Subnets == nil {
+		networkConfig.Subnets = make(map[string]string)
+	}
+
 	if _, contains := networkConfig.Subnets[data.Id.ValueString()]; contains {
 		resp.Diagnostics.AddError("network_request already exist with this id : %s, check your config or consider to import", data.Id.ValueString())
 		return
@@ -181,18 +119,18 @@ func (r *networkRequestResource) Create(ctx context.Context, req resource.Create
 
 	cidrCalc, err := cidrCalculator.New(&networkConfig.Subnets, int8(data.PrefixLength.ValueInt64()), gcpConnector.BaseCidrRange)
 	if err != nil {
-		resp.Diagnostics.AddError("Fail to get the subnet calculator for the network_request : %s", err.Error())
+		resp.Diagnostics.AddError("network_request creation error", fmt.Sprintf("Fail to get the subnet calculator for the network_request: %s", err.Error()))
 		return
 	}
 	netmask, err := cidrCalc.GetNextNetmask()
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Cannot find any subnet in %s withcidr %d available", gcpConnector.BaseCidrRange, data.PrefixLength.ValueInt64()), err.Error())
+		resp.Diagnostics.AddError("network_request creation error", fmt.Sprintf("Cannot find any available subnet in %s with prefix %d: %s", gcpConnector.BaseCidrRange, data.PrefixLength.ValueInt64(), err.Error()))
 		return
 	}
 	networkConfig.Subnets[data.Id.ValueString()] = netmask
-	err = writeRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
+	err = gcpConnector.Write(ctx, &networkConfig)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Cannot Write %s in %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString()), err.Error())
+		resp.Diagnostics.AddError("network_request creation error", fmt.Sprintf("Cannot write network config for %s in %s: %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString(), err.Error()))
 		return
 	}
 	data.Netmask = types.StringValue(netmask)
@@ -203,31 +141,28 @@ func (r *networkRequestResource) Create(ctx context.Context, req resource.Create
 
 func (r *networkRequestResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data networkRequestResourceModel
-	var networkConfig NetworkConfig
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	gcpConnector := getNetworkConnector(ctx, &data, r.providerData, &networkConfig)
-	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
+
+	gcpConnector := connector.NewNetwork(r.providerData.ReferentialBucket.ValueString(), data.BaseCidr.ValueString())
+	var networkConfig NetworkConfig
+	err := gcpConnector.Read(ctx, &networkConfig)
 	if err != nil {
-		resp.Diagnostics.AddError("Cannot put lock to create the network_request :", err.Error())
-		return
-	}
-	defer func() {
-		err = gcpConnector.Unlock(ctx, lockId)
-		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Cannot unlock %s: %s", gcpConnector.BaseCidrRange, err.Error()), data.Id.ValueString())
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			tflog.Warn(ctx, fmt.Sprintf("Network config for %s not found, removing resource from state", data.BaseCidr.ValueString()))
+			resp.State.RemoveResource(ctx)
+		} else {
+			resp.Diagnostics.AddError("network_request read error", fmt.Sprintf("Cannot Read %s in %s: %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString(), err.Error()))
 		}
-	}()
-	err = readRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
-	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Cannot Read %s in %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString()), err.Error())
 		return
 	}
+
 	reservedSubnet, contains := networkConfig.Subnets[data.Id.ValueString()]
 	if !contains {
-		resp.Diagnostics.AddError("network_request cannot be find with this id : %s", data.Id.ValueString())
+		tflog.Warn(ctx, fmt.Sprintf("Network request %s not found in %s, removing resource from state", data.Id.ValueString(), data.BaseCidr.ValueString()))
+		resp.State.RemoveResource(ctx)
 		return
 	}
 	data.Netmask = types.StringValue(reservedSubnet)
@@ -248,37 +183,42 @@ func (r *networkRequestResource) Update(ctx context.Context, req resource.Update
 
 func (r *networkRequestResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data networkRequestResourceModel
-	var networkConfig NetworkConfig
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	gcpConnector := getNetworkConnector(ctx, &data, r.providerData, &networkConfig)
+	gcpConnector := connector.NewNetwork(r.providerData.ReferentialBucket.ValueString(), data.BaseCidr.ValueString())
 	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
-		resp.Diagnostics.AddError("Cannot put lock to create the network_request :", err.Error())
+		resp.Diagnostics.AddError("network_request delete error", fmt.Sprintf("Cannot acquire lock for base_cidr %s: %s", data.BaseCidr.ValueString(), err.Error()))
 		return
 	}
 	defer func() {
-		err = gcpConnector.Unlock(ctx, lockId)
-		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("Cannot unlock %s: %s", gcpConnector.BaseCidrRange, err.Error()), data.Id.ValueString())
+		if err := gcpConnector.Unlock(ctx, lockId); err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("Failed to unlock network config for %s, manual intervention may be required to remove lock file: %s", data.BaseCidr.ValueString(), err.Error()))
 		}
 	}()
-	err = readRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
+
+	var networkConfig NetworkConfig
+	err = gcpConnector.Read(ctx, &networkConfig)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Cannot Read %s in %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString()), err.Error())
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			// File doesn't exist, so the reservation is already gone.
+			return
+		}
+		resp.Diagnostics.AddError("network_request delete error", fmt.Sprintf("Cannot Read %s in %s: %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString(), err.Error()))
 		return
 	}
+
 	_, contains := networkConfig.Subnets[data.Id.ValueString()]
 	if !contains {
-		resp.Diagnostics.AddError("network_request cannot be find with this id : %s", data.Id.ValueString())
+		// Reservation doesn't exist, nothing to do.
 		return
 	}
 	delete(networkConfig.Subnets, data.Id.ValueString())
-	err = writeRemoteNetwork(ctx, &data, r.providerData, &networkConfig, lockId)
+	err = gcpConnector.Write(ctx, &networkConfig)
 	if err != nil {
-		resp.Diagnostics.AddError(fmt.Sprintf("Cannot Write %s in %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString()), err.Error())
+		resp.Diagnostics.AddError("network_request delete error", fmt.Sprintf("Cannot Write %s in %s: %s", gcpConnector.BaseCidrRange, r.providerData.ReferentialBucket.ValueString(), err.Error()))
 		return
 	}
 }
