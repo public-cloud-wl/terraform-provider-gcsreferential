@@ -62,7 +62,7 @@ func TestAccIdPoolResource(t *testing.T) {
 			// 4. Check cannot duplicate
 			{
 				Config:      testAccIdPoolResourceConfig(poolName2, 1, 20) + "\n" + testAccIdPoolResourceConfig_duplicate_pool(poolName2, 1, 20),
-				ExpectError: regexp.MustCompile("it already exist"),
+				ExpectError: regexp.MustCompile("Pool 'test_renamed' already exists."),
 			},
 		},
 	})

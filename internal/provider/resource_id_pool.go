@@ -2,10 +2,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
+	"cloud.google.com/go/storage"
+
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -30,7 +32,7 @@ func NewIdPoolResource() resource.Resource {
 }
 
 type IdPoolResource struct {
-	providerData GCSReferentialProviderModel
+	providerData *GCSReferentialProviderModel
 }
 
 type IdPoolResourceModel struct {
@@ -88,147 +90,65 @@ func (r *IdPoolResource) Configure(ctx context.Context, req resource.ConfigureRe
 	if req.ProviderData == nil {
 		return
 	}
-	providerData, ok := req.ProviderData.(GCSReferentialProviderModel)
+	providerData, ok := req.ProviderData.(*GCSReferentialProviderModel)
 	if !ok {
-		resp.Diagnostics.AddError("Invalid provider data ", "")
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *GCSReferentialProviderModel, got: %T. Please report this issue to the provider developers.", req.ProviderData))
+		return
 	}
 	r.providerData = providerData
 }
 
-func getPoolConnector(ctx context.Context, data *IdPoolResourceModel, p GCSReferentialProviderModel, idpool *IdPoolTools.IDPool) connector.GcpConnectorGeneric {
-	bucketName := p.ReferentialBucket.ValueString()
-	fullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
-	gcpConnector := connector.NewGeneric(bucketName, fullPath)
-	// Must stay for getting current generation index.
-	err := gcpConnector.Read(ctx, idpool)
-	if err != nil {
-		tflog.Debug(ctx, fmt.Sprintf("Error on reading id_pool %s on bucket %s", fullPath, bucketName))
-	}
-	tflog.Debug(ctx, fmt.Sprintf("Using getPoolConnector function that make 1 read for id_pool %s on bucket %s", fullPath, bucketName))
-	return gcpConnector
-}
-
-func readRemoteIdPool(ctx context.Context, data *IdPoolResourceModel, p GCSReferentialProviderModel, idpool *IdPoolTools.IDPool, existingLock ...uuid.UUID) error {
-	gcpConnector := getPoolConnector(ctx, data, p, idpool)
-	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
-	if err != nil {
-		return fmt.Errorf("Fail to acquire lock: %w", err)
-	}
-
-	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
-	if shouldUnlock {
-		defer func() {
-			unlockErr := gcpConnector.Unlock(ctx, lockId)
-			if unlockErr != nil {
-				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s), %s", data.Name, lockId, unlockErr.Error()))
-				// As we are in a defer function (at the end) need to chek last error.
-				if err == nil {
-					// No error.
-					err = fmt.Errorf("Failed to unlock %s (%s)", data.Name, lockId)
-				} else {
-					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Name, lockId, err.Error())
-				}
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Name, lockId))
-			}
-		}()
-	}
-	err = gcpConnector.Read(ctx, idpool)
-	return err
-}
-
-func writeRemoteIdPool(ctx context.Context, data *IdPoolResourceModel, p GCSReferentialProviderModel, idpool *IdPoolTools.IDPool, existingLock ...uuid.UUID) error {
-	var tmpIdPool IdPoolTools.IDPool
-	gcpConnector := getPoolConnector(ctx, data, p, &tmpIdPool)
-	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
-
-	if err != nil {
-		return fmt.Errorf("Fail to acquire lock: %w", err)
-	}
-
-	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
-	if shouldUnlock {
-		defer func() {
-			unlockErr := gcpConnector.Unlock(ctx, lockId)
-			if unlockErr != nil {
-				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.Name, lockId))
-				// As we are in a defer function (at the end) need to chek last error.
-				if err == nil {
-					// No error.
-					err = fmt.Errorf("Failed to unlock %s (%s)", data.Name, lockId)
-				} else {
-					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Name, lockId, err.Error())
-				}
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Name, lockId))
-			}
-		}()
-	}
-
-	err = gcpConnector.Write(ctx, idpool)
-	return err
-}
-
-func deleteRemoteIdPool(ctx context.Context, data *IdPoolResourceModel, p GCSReferentialProviderModel, existingLock ...uuid.UUID) error {
-	gcpConnector := getPoolConnector(ctx, data, p, nil)
-	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(p.TimeoutInMinutes.ValueInt32()), p.BackoffMultiplier.ValueFloat32(), existingLock...)
-
-	if err != nil {
-		return fmt.Errorf("Fail to acquire lock: %w", err)
-	}
-
-	shouldUnlock := len(existingLock) == 0 || lockId != existingLock[0]
-	if shouldUnlock {
-		defer func() {
-			unlockErr := gcpConnector.Unlock(ctx, lockId)
-			if unlockErr != nil {
-				tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.Name, lockId))
-				// As we are in a defer function (at the end) need to chek last error.
-				if err == nil {
-					// No error.
-					err = fmt.Errorf("Failed to unlock %s (%s)", data.Name, lockId)
-				} else {
-					err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Name, lockId, err.Error())
-				}
-			} else {
-				tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Name, lockId))
-			}
-		}()
-	}
-
-	err = gcpConnector.Delete(ctx)
-	return err
-}
-
 func (r *IdPoolResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data IdPoolResourceModel
-	var err error
-	var pool IdPoolTools.IDPool
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err = readRemoteIdPool(ctx, &data, r.providerData, &pool)
-	if err == nil {
-		resp.Diagnostics.AddError("id_pool create error", fmt.Sprintf("Error on creation of %s it already exist, verify you did not make any mistake or consider to import", data.Name))
+
+	fullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
+	gcpConnector := connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), fullPath)
+
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
+	if err != nil {
+		resp.Diagnostics.AddError("id_pool create error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
 		return
 	}
-	data.Id = data.Name
-	tflog.Debug(ctx, "I WILL TRY TO CREATE THE POOL")
-	pool = *IdPoolTools.NewIDPool(IdPoolTools.ID(data.StartFrom.ValueInt64()), IdPoolTools.ID(data.EndTo.ValueInt64()))
+	defer gcpConnector.Unlock(ctx, lockId)
+
+	// Use the caching helper to check for existence.
+	_, err = getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
+	if err == nil {
+		resp.Diagnostics.AddError(
+			"id_pool create error",
+			fmt.Sprintf("Pool '%s' already exists. To manage this existing pool, please import it.", data.Name.ValueString()),
+		)
+		return
+	}
+	if !errors.Is(err, storage.ErrObjectNotExist) {
+		resp.Diagnostics.AddError("id_pool create error", fmt.Sprintf("Failed to check for existing pool '%s': %s", data.Name.ValueString(), err.Error()))
+		return
+	}
+
+	pool := *IdPoolTools.NewIDPool(IdPoolTools.ID(data.StartFrom.ValueInt64()), IdPoolTools.ID(data.EndTo.ValueInt64()))
 	if !pool.IsValid() {
-		tflog.Debug(ctx, fmt.Sprintf("INVALID POOL: %s", data.Name))
 		resp.Diagnostics.AddError("id_pool create error", "Invalid pool, please check start_from and end_to")
 		return
 	}
-	emptyGoMap := map[string]attr.Value{}
-	data.Reservations, _ = types.MapValue(types.Int64Type, emptyGoMap)
-	tflog.Debug(ctx, "WRITING POOL ...")
-	err = writeRemoteIdPool(ctx, &data, r.providerData, &pool)
+
+	// The connector's generation is -1 because Read failed. This will cause Write to use DoesNotExist condition.
+	err = gcpConnector.Write(ctx, &pool)
 	if err != nil {
-		resp.Diagnostics.AddError("id_pool create error", "Cannot save id_pool on referential_bucket")
+		resp.Diagnostics.AddError("id_pool create error", fmt.Sprintf("Cannot save id_pool on referential_bucket: %s", err.Error()))
 		return
 	}
+
+	// After a successful write, the pool is created. We can warm up the cache.
+	// The lock is still held, so this is safe.
+	getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
+
+	data.Id = data.Name
+	emptyGoMap := map[string]attr.Value{}
+	data.Reservations, _ = types.MapValue(types.Int64Type, emptyGoMap)
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -236,37 +156,34 @@ func (r *IdPoolResource) Create(ctx context.Context, req resource.CreateRequest,
 
 func (r *IdPoolResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data IdPoolResourceModel
-	var err error
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err = innerPoolRead(ctx, &data, r.providerData)
-	if err != nil {
-		resp.State.RemoveResource(ctx)
-	} else {
-		// Save data into Terraform state
-		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	}
-}
 
-func innerPoolRead(ctx context.Context, data *IdPoolResourceModel, p GCSReferentialProviderModel) error {
-	var pool IdPoolTools.IDPool
-	err := readRemoteIdPool(ctx, data, p, &pool)
+	fullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
+	gcpConnector := connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), fullPath)
+
+	cachedPool, err := getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
 	if err != nil {
-		return fmt.Errorf("Cannot read the %s from the %s bucket", data.Name, p.ReferentialBucket)
+		tflog.Warn(ctx, fmt.Sprintf("Pool %s not found, removing from state.", data.Name.ValueString()))
+		resp.State.RemoveResource(ctx)
+		return
 	}
-	err = idPoolFromToolToModel(data, &pool, p)
+
+	err = idPoolFromToolToModel(&data, cachedPool.Pool, r.providerData)
 	if err != nil {
-		return err
+		resp.Diagnostics.AddError("id_pool read error", fmt.Sprintf("Failed to process pool data for %s: %s", data.Name.ValueString(), err.Error()))
+		return
 	}
-	return nil
+
+	// Save data into Terraform state
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data IdPoolResourceModel
 	var newData IdPoolResourceModel
-	var pool IdPoolTools.IDPool
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &newData)...)
 
@@ -280,34 +197,24 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	gcpConnector := getPoolConnector(ctx, &data, r.providerData, &pool)
+	fullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
+	gcpConnector := connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), fullPath)
+
 	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
-
 	if err != nil {
-		tflog.Error(ctx, fmt.Sprintf("Fail to acquire lock: %s", err.Error()))
-		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Fail to acquire lock: %s", err.Error()))
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
+		return
+	}
+	defer gcpConnector.Unlock(ctx, lockId)
+
+	cachedPool, err := getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
+	if err != nil {
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot find id_pool: %s on %s: %s", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString(), err.Error()))
+		return
 	}
 
-	defer func() {
-		unlockErr := gcpConnector.Unlock(ctx, lockId)
-		if unlockErr != nil {
-			tflog.Error(ctx, fmt.Sprintf("Failed to unlock %s (%s)", data.Name, lockId))
-			// As we are in a defer function (at the end) need to chek last error.
-			if err == nil {
-				// No error.
-				err = fmt.Errorf("Failed to unlock %s (%s)", data.Name.ValueString(), lockId)
-			} else {
-				err = fmt.Errorf("Failed to unlock %s (%s) AND %s", data.Name.ValueString(), lockId, err.Error())
-			}
-		} else {
-			tflog.Debug(ctx, fmt.Sprintf("Success to unlock %s (%s)", data.Name, lockId))
-		}
-	}()
-
-	err = readRemoteIdPool(ctx, &data, r.providerData, &pool, lockId)
-	if err != nil {
-		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot find id_pool: %s on %s ", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
-	}
+	cachedPool.Mutex.Lock()
+	defer cachedPool.Mutex.Unlock()
 
 	// Make changes.
 	namedChanged := data.Name != newData.Name
@@ -317,7 +224,7 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if start_from_changed || end_to_changed {
 
 		// Check members.
-		for k, v := range pool.Members {
+		for k, v := range cachedPool.Pool.Members {
 			if v < IdPoolTools.ID(newData.StartFrom.ValueInt64()) || v > IdPoolTools.ID(newData.EndTo.ValueInt64()) {
 				tflog.Error(ctx, fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
 				resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
@@ -325,22 +232,22 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 			}
 		}
 
-		pool.StartFrom = IdPoolTools.ID(newData.StartFrom.ValueInt64())
-		pool.EndTo = IdPoolTools.ID(newData.EndTo.ValueInt64())
+		cachedPool.Pool.StartFrom = IdPoolTools.ID(newData.StartFrom.ValueInt64())
+		cachedPool.Pool.EndTo = IdPoolTools.ID(newData.EndTo.ValueInt64())
 
 		// start_from change
 		if newData.StartFrom.ValueInt64() < data.StartFrom.ValueInt64() {
 			// Add new IDs
 			loopIndex := newData.StartFrom.ValueInt64()
 			for loopIndex < data.StartFrom.ValueInt64() {
-				pool.Insert(IdPoolTools.ID(loopIndex))
+				cachedPool.Pool.Insert(IdPoolTools.ID(loopIndex))
 				loopIndex++
 			}
 		} else {
 			// Remove no more available IDs.
 			loopIndex := data.StartFrom.ValueInt64()
 			for loopIndex < newData.StartFrom.ValueInt64() {
-				pool.Remove(IdPoolTools.ID(loopIndex))
+				cachedPool.Pool.Remove(IdPoolTools.ID(loopIndex))
 				loopIndex++
 			}
 		}
@@ -349,31 +256,46 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 			// Add new IDs
 			loopIndex := data.EndTo.ValueInt64() + 1
 			for loopIndex <= newData.EndTo.ValueInt64() {
-				pool.Insert(IdPoolTools.ID(loopIndex))
+				cachedPool.Pool.Insert(IdPoolTools.ID(loopIndex))
 				loopIndex++
 			}
 		} else {
 			// Remove no more available IDs.
 			loopIndex := data.EndTo.ValueInt64()
 			for loopIndex > newData.EndTo.ValueInt64() {
-				pool.Remove(IdPoolTools.ID(loopIndex))
+				cachedPool.Pool.Remove(IdPoolTools.ID(loopIndex))
 				loopIndex--
 			}
 		}
 	}
 
-	// Write file.
-	err = writeRemoteIdPool(ctx, &newData, r.providerData, &pool, lockId)
-	if err != nil {
-		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot write new id_pool content for: %s on %s ", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+	newConnector := gcpConnector
+	if namedChanged {
+		newFullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, newData.Name.ValueString())
+		newConnector = connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), newFullPath)
 	}
 
+	// Write file.
+	err = newConnector.Write(ctx, cachedPool.Pool)
+	if err != nil {
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot write new id_pool content for: %s on %s ", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+		return
+	}
+	// Update generation in cache
+	cachedPool.Generation = newConnector.Generation
+
+	// If name changed, invalidate old cache entry
 	if namedChanged {
 		// Remove old file.
-		err = deleteRemoteIdPool(ctx, &data, r.providerData, lockId)
+		err = gcpConnector.Delete(ctx)
 		if err != nil {
+			// This is not a fatal error, but we should warn the user. The old file is orphaned.
 			resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot remove old id_pool %s after duplicate into new one %s on %s", data.Name.ValueString(), newData.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
 		}
+		// Invalidate old cache
+		r.providerData.CacheMutex.Lock()
+		delete(r.providerData.IdPoolsCache, data.Name.ValueString())
+		r.providerData.CacheMutex.Unlock()
 	}
 	// Save data into Terraform state.
 	newData.Reservations = data.Reservations
@@ -388,11 +310,26 @@ func (r *IdPoolResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := deleteRemoteIdPool(ctx, &data, r.providerData)
+
+	fullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
+	gcpConnector := connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), fullPath)
+
+	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
-		resp.Diagnostics.AddError("id_pool delete error", "Cannot delete id_pool")
+		resp.Diagnostics.AddError("id_pool delete error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
 		return
 	}
+	defer gcpConnector.Unlock(ctx, lockId)
+
+	err = gcpConnector.Delete(ctx)
+	if err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
+		resp.Diagnostics.AddError("id_pool delete error", fmt.Sprintf("Cannot delete id_pool %s: %s", data.Name.ValueString(), err.Error()))
+	}
+
+	// Invalidate cache
+	r.providerData.CacheMutex.Lock()
+	delete(r.providerData.IdPoolsCache, data.Name.ValueString())
+	r.providerData.CacheMutex.Unlock()
 }
 
 func (r *IdPoolResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -400,7 +337,7 @@ func (r *IdPoolResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
 
-func idPoolFromToolToModel(data *IdPoolResourceModel, pool *IdPoolTools.IDPool, p GCSReferentialProviderModel) error {
+func idPoolFromToolToModel(data *IdPoolResourceModel, pool *IdPoolTools.IDPool, p *GCSReferentialProviderModel) error {
 	if !pool.IsValid() {
 		return fmt.Errorf("Something append with the %s from the %s bucket that invalidate it", data.Name, p.ReferentialBucket)
 	}
