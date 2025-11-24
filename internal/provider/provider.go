@@ -2,12 +2,14 @@ package provider
 
 import (
 	"context"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	IdPoolTools "github.com/public-cloud-wl/tools/idPoolTools"
 )
 
 var _ provider.Provider = &GCSReferentialProvider{}
@@ -29,10 +31,17 @@ func New(version string) func() provider.Provider {
 	}
 }
 
+type CachedIdPool struct {
+	Pool       *IdPoolTools.IDPool
+	Generation int64
+}
+
 type GCSReferentialProviderModel struct {
-	ReferentialBucket types.String  `tfsdk:"referential_bucket"`
-	TimeoutInMinutes  types.Int32   `tfsdk:"timeout_in_minutes"`
-	BackoffMultiplier types.Float32 `tfsdk:"backoff_multiplier"`
+	ReferentialBucket types.String             `tfsdk:"referential_bucket"`
+	TimeoutInMinutes  types.Int32              `tfsdk:"timeout_in_minutes"`
+	BackoffMultiplier types.Float32            `tfsdk:"backoff_multiplier"`
+	IdPoolsCache      map[string]*CachedIdPool `tfsdk:"-"`
+	CacheMutex        *sync.Mutex              `tfsdk:"-"`
 }
 
 func (p *GCSReferentialProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -62,8 +71,8 @@ func (p *GCSReferentialProvider) Schema(ctx context.Context, req provider.Schema
 
 // Configure function for the provider.
 func (p *GCSReferentialProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	var data GCSReferentialProviderModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	data := &GCSReferentialProviderModel{}
+	resp.Diagnostics.Append(req.Config.Get(ctx, data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -76,6 +85,10 @@ func (p *GCSReferentialProvider) Configure(ctx context.Context, req provider.Con
 	if data.BackoffMultiplier.IsNull() {
 		data.BackoffMultiplier = types.Float32Value(0.5)
 	}
+
+	data.IdPoolsCache = make(map[string]*CachedIdPool)
+	data.CacheMutex = &sync.Mutex{}
+
 	resp.DataSourceData = data
 	resp.ResourceData = data
 }
