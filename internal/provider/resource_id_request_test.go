@@ -69,12 +69,29 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 				RefreshState: true,
 				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "1"),
 			},
+		},
+	})
+}
+
+func TestAccIdRequestResource_multiple_provider(t *testing.T) {
+	bucketName := os.Getenv("GCS_REFERENTIAL_BUCKET")
+	if bucketName == "" {
+		t.Skip("GCS_REFERENTIAL_BUCKET environment variable not set, skipping acceptance test")
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
 			{
 				Config: testAccIdRequestResourceConfig2(),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test_req2", "requested_id"),
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test2_req3", "requested_id"),
 				),
+			},
+			// Check after refresh there is 6 reservations
+			{
+				RefreshState: true,
+				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "6"),
 			},
 		},
 	})
@@ -159,7 +176,7 @@ func testAccIdRequestResourceConfig2() string {
 	resource "gcsreferential_id_pool" "test" {
 	  name       = "test-pool-multi-provider"
 	  start_from = 1
-	  end_to     = 100
+	  end_to     = 6
 	}
 
 	  resource "gcsreferential_id_request" "test_req1" {
