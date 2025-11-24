@@ -111,9 +111,6 @@ func (r *IdRequestResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	cachedPool.Mutex.Lock()
-	defer cachedPool.Mutex.Unlock()
-
 	_, ok := cachedPool.Pool.Members[data.Id.ValueString()]
 	if ok {
 		resp.Diagnostics.AddError("id_request creation error", "The id of your id_request is already present in the pool, be sure you did not make any mistake, or consider to import")
@@ -131,7 +128,10 @@ func (r *IdRequestResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("id_request creation error", fmt.Sprintf("Cannot update pool on the referential_bucket: %s", err.Error()))
 		return
 	}
-	cachedPool.Generation = gcpConnector.Generation
+	// Invalidate the cache for this pool to force a re-read on the next operation.
+	r.providerData.CacheMutex.Lock()
+	delete(r.providerData.IdPoolsCache, data.Pool.ValueString())
+	r.providerData.CacheMutex.Unlock()
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -206,9 +206,6 @@ func (r *IdRequestResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	cachedPool.Mutex.Lock()
-	defer cachedPool.Mutex.Unlock()
-
 	value, ok := cachedPool.Pool.Members[data.Id.ValueString()]
 	if !ok {
 		resp.Diagnostics.AddError("id_request update error", "Cannot find your id_request in the referential_bucket")
@@ -222,7 +219,10 @@ func (r *IdRequestResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Diagnostics.AddError("id_request update error", fmt.Sprintf("Cannot update pool on the referential_bucket: %s", err.Error()))
 		return
 	}
-	cachedPool.Generation = gcpConnector.Generation
+	// Invalidate the cache for this pool to force a re-read on the next operation.
+	r.providerData.CacheMutex.Lock()
+	delete(r.providerData.IdPoolsCache, data.Pool.ValueString())
+	r.providerData.CacheMutex.Unlock()
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newData)...)
@@ -258,9 +258,6 @@ func (r *IdRequestResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	cachedPool.Mutex.Lock()
-	defer cachedPool.Mutex.Unlock()
-
 	value, ok := cachedPool.Pool.Members[data.Id.ValueString()]
 	if !ok {
 		// If the member is not found, it's already been deleted. This is not an error.
@@ -274,7 +271,10 @@ func (r *IdRequestResource) Delete(ctx context.Context, req resource.DeleteReque
 		resp.Diagnostics.AddError("id_request delete error", fmt.Sprintf("Cannot update pool on the referential_bucket: %s", err.Error()))
 		return
 	}
-	cachedPool.Generation = gcpConnector.Generation
+	// Invalidate the cache for this pool to force a re-read on the next operation.
+	r.providerData.CacheMutex.Lock()
+	delete(r.providerData.IdPoolsCache, data.Pool.ValueString())
+	r.providerData.CacheMutex.Unlock()
 }
 
 func (r *IdRequestResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

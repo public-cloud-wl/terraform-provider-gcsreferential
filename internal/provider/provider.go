@@ -34,7 +34,6 @@ func New(version string) func() provider.Provider {
 type CachedIdPool struct {
 	Pool       *IdPoolTools.IDPool
 	Generation int64
-	Mutex      *sync.Mutex
 }
 
 type GCSReferentialProviderModel struct {

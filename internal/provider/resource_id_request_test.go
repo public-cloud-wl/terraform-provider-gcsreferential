@@ -17,7 +17,7 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 
 	reqIds10 := generateRequestIds(10)
 	reqIds11 := generateRequestIds(11)
-	reqIds13 := generateRequestIds(13)
+	reqIds12 := generateRequestIds(12)
 	reqIds5 := generateRequestIds(5)
 	var nullList []string
 
@@ -26,7 +26,7 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create a pool and 11 requests (10 generated + 1 static)
 			{
-				Config: testAccIdRequestResourceConfig(1, 11, reqIds10),
+				Config: testAccIdRequestResourceConfig(2, 12, reqIds10),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "name", "test-pool-for-requests-large"),
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test_req2", "requested_id"),
@@ -39,20 +39,20 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			},
 			// Check pool is full
 			{
-				Config:      testAccIdRequestResourceConfig(1, 11, reqIds11),
+				Config:      testAccIdRequestResourceConfig(2, 12, reqIds11),
 				ExpectError: regexp.MustCompile("There is no more id available in the pool"),
 			},
 			// Check extend pool and can book 2 new request dynamic
 			{
-				Config: testAccIdRequestResourceConfig(0, 12, reqIds13),
+				Config: testAccIdRequestResourceConfig(1, 13, reqIds12),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-11", "requested_id"),
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-12", "requested_id"),
-					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-13", "requested_id"),
 				),
 			},
 			// Update: remove to keep 5 + 1 requests + resize down the pool
 			{
-				Config: testAccIdRequestResourceConfig(0, 12, reqIds5),
+				Config: testAccIdRequestResourceConfig(1, 13, reqIds5),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("gcsreferential_id_request.req-5", "requested_id"),
 				),
@@ -68,6 +68,13 @@ func TestAccIdRequestResource_LargeScale(t *testing.T) {
 			{
 				RefreshState: true,
 				Check:        resource.TestCheckResourceAttr("gcsreferential_id_pool.test", "reservations.%", "1"),
+			},
+			{
+				Config: testAccIdRequestResourceConfig2(),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test_req2", "requested_id"),
+					resource.TestCheckResourceAttrSet("gcsreferential_id_request.test2_req3", "requested_id"),
+				),
 			},
 		},
 	})
@@ -95,6 +102,27 @@ func testAccIdRequestResourceConfig(start int, end int, reqIds []string) string 
 	  end_to     = %d
 	}
 
+	resource "gcsreferential_id_pool" "test2" {
+		name       = "test-pool-for-requests-large-2"
+		start_from = 1
+		end_to     = 3
+	  }
+
+	  resource "gcsreferential_id_request" "test2_req1" {
+		pool = gcsreferential_id_pool.test2.name
+		id   = "req-1"
+	  }
+
+	  resource "gcsreferential_id_request" "test2_req2" {
+		pool = gcsreferential_id_pool.test2.name
+		id   = "req-2"
+	  }
+
+	  resource "gcsreferential_id_request" "test2_req3" {
+		pool = gcsreferential_id_pool.test2.name
+		id   = "req-3"
+	  }
+
 	resource "gcsreferential_id_request" "test_req2" {
 		pool = gcsreferential_id_pool.test.name
 		id   = "test"
@@ -112,6 +140,89 @@ func testAccIdRequestResourceConfig(start int, end int, reqIds []string) string 
 		`, i, i)
 		returned += tmp_req
 	}
+
+	return returned
+}
+
+func testAccIdRequestResourceConfig2() string {
+	bucketName := os.Getenv("GCS_REFERENTIAL_BUCKET")
+
+	returned := fmt.Sprintf(`
+	provider "gcsreferential" {
+	  referential_bucket = "%s"
+	}
+	provider "gcsreferential" {
+		referential_bucket = "%s"
+		alias = "test2"
+	  }
+	
+	resource "gcsreferential_id_pool" "test" {
+	  name       = "test-pool-multi-provider"
+	  start_from = 1
+	  end_to     = 100
+	}
+
+	  resource "gcsreferential_id_request" "test_req1" {
+		pool = gcsreferential_id_pool.test.name
+		id   = "req-1"
+	  }
+	  
+	  resource "gcsreferential_id_request" "test_req2" {
+		pool = gcsreferential_id_pool.test.name
+		id   = "req-2"
+	  }
+
+	  resource "gcsreferential_id_request" "test_req3" {
+		pool = gcsreferential_id_pool.test.name
+		id   = "req-3"
+	  }
+
+	  resource "gcsreferential_id_pool" "test2" {
+		name       = "test-pool-multi-provider2"
+		start_from = 1
+		end_to     = 100
+		provider = gcsreferential.test2
+	  }
+	  
+  
+		resource "gcsreferential_id_request" "test2_req1" {
+		  pool = gcsreferential_id_pool.test2.name
+		  id   = "req-1"
+		  provider = gcsreferential.test2
+		}
+		
+		resource "gcsreferential_id_request" "test2_req2" {
+		  pool = gcsreferential_id_pool.test2.name
+		  id   = "req-2"
+		  provider = gcsreferential.test2
+		}
+  
+		resource "gcsreferential_id_request" "test2_req3" {
+		  pool = gcsreferential_id_pool.test2.name
+		  id   = "req-3"
+		  provider = gcsreferential.test2
+		}
+
+
+		resource "gcsreferential_id_request" "test_cross_req1" {
+			pool = gcsreferential_id_pool.test.name
+			id   = "req-11"
+			provider = gcsreferential.test2
+		  }
+		  
+		  resource "gcsreferential_id_request" "test_cross_req2" {
+			pool = gcsreferential_id_pool.test.name
+			id   = "req-12"
+			provider = gcsreferential.test2
+		  }
+	
+		  resource "gcsreferential_id_request" "test_cross_req3" {
+			pool = gcsreferential_id_pool.test.name
+			id   = "req-13"
+			provider = gcsreferential.test2
+		  }
+
+	  `, bucketName, bucketName)
 
 	return returned
 }

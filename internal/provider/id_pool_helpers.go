@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"sync"
 
 	"cloud.google.com/go/storage"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -54,17 +53,16 @@ func getAndCacheIdPool(ctx context.Context, p *GCSReferentialProviderModel, pool
 
 	// Reconcile the pool's internal state after reading from JSON.
 	members := pool.Members
-	reconciledPool := *IdPoolTools.NewIDPool(pool.StartFrom, pool.EndTo)
+	reconciledPoolPtr := IdPoolTools.NewIDPool(pool.StartFrom, pool.EndTo)
 	for _, allocatedID := range members {
-		reconciledPool.Remove(allocatedID)
+		reconciledPoolPtr.Remove(allocatedID)
 	}
-	reconciledPool.Members = members
+	reconciledPoolPtr.Members = members
 
 	// Store the newly read and reconciled pool in the cache.
 	newCachedPool := &CachedIdPool{
-		Pool:       &reconciledPool,
+		Pool:       reconciledPoolPtr,
 		Generation: gcpConnector.Generation, // Read() updates the connector's generation.
-		Mutex:      &sync.Mutex{},
 	}
 	p.IdPoolsCache[poolName] = newCachedPool
 	tflog.Debug(ctx, "Cached new pool version", map[string]interface{}{"pool": poolName, "generation": newCachedPool.Generation})

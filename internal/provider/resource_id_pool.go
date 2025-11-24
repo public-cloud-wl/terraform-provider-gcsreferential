@@ -193,20 +193,19 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 	var newData IdPoolResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &newData)...)
-
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	fullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
-	gcpConnector := connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), fullPath)
+	// Determine if the pool is being renamed.
+	nameChanged := !data.Name.Equal(newData.Name)
 
+	// Set up connector for the *old* pool name to acquire the lock.
+	oldFullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, data.Name.ValueString())
+	gcpConnector := connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), oldFullPath)
+
+	// Acquire lock on the old pool name to prevent concurrent modifications.
 	lockId, err := gcpConnector.WaitForlock(ctx, time.Minute*time.Duration(r.providerData.TimeoutInMinutes.ValueInt32()), r.providerData.BackoffMultiplier.ValueFloat32())
 	if err != nil {
 		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot acquire lock for pool %s: %s", data.Name.ValueString(), err.Error()))
@@ -218,71 +217,76 @@ func (r *IdPoolResource) Update(ctx context.Context, req resource.UpdateRequest,
 		}
 	}()
 
-	cachedPool, err := getAndCacheIdPool(ctx, r.providerData, data.Name.ValueString(), &gcpConnector)
+	// Since this is an update, we must read the current state directly from GCS, bypassing the cache.
+	var currentPool IdPoolTools.IDPool
+	err = gcpConnector.Read(ctx, &currentPool)
 	if err != nil {
-		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot find id_pool: %s on %s: %s", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString(), err.Error()))
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot update pool '%s' because it was deleted outside of Terraform.", data.Name.ValueString()))
+		} else {
+			resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot read id_pool '%s' for update: %s", data.Name.ValueString(), err.Error()))
+		}
 		return
 	}
 
-	cachedPool.Mutex.Lock()
-	defer cachedPool.Mutex.Unlock()
-
-	// Make changes.
-	namedChanged := data.Name != newData.Name
-	start_from_changed := data.StartFrom != newData.StartFrom
-	end_to_changed := data.EndTo != newData.EndTo
-
-	if start_from_changed || end_to_changed {
-		currentMembers := cachedPool.Pool.Members
-
-		// Check members.
-		for k, v := range currentMembers {
-			if v < IdPoolTools.ID(newData.StartFrom.ValueInt64()) || v > IdPoolTools.ID(newData.EndTo.ValueInt64()) {
-				tflog.Error(ctx, fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
-				resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
-				return
-			}
+	// Check if any existing members would be outside the new range.
+	for k, v := range currentPool.Members {
+		if v < IdPoolTools.ID(newData.StartFrom.ValueInt64()) || v > IdPoolTools.ID(newData.EndTo.ValueInt64()) {
+			resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Failed change pool %s, still a member that cannot fit into new limits: %s, that have value: %d", newData.Name.ValueString(), k, v))
+			return
 		}
-		// Rebuild the pool from scratch with the new range and existing members.
-		// This is much more robust than trying to patch the existing pool's free list.
-		newPool := *IdPoolTools.NewIDPool(IdPoolTools.ID(newData.StartFrom.ValueInt64()), IdPoolTools.ID(newData.EndTo.ValueInt64()))
-		for _, allocatedID := range currentMembers {
-			newPool.Remove(allocatedID)
-		}
-		newPool.Members = currentMembers
-		cachedPool.Pool = &newPool
 	}
 
-	newConnector := gcpConnector
-	if namedChanged {
+	// Rebuild the pool from scratch with the new range and existing members. This is the safest way to handle range changes.
+	rebuiltPool := IdPoolTools.NewIDPool(IdPoolTools.ID(newData.StartFrom.ValueInt64()), IdPoolTools.ID(newData.EndTo.ValueInt64()))
+	for _, allocatedID := range currentPool.Members {
+		rebuiltPool.Remove(allocatedID)
+	}
+	rebuiltPool.Members = currentPool.Members
+
+	// Determine which connector to use for writing.
+	writeConnector := gcpConnector
+	if nameChanged {
 		newFullPath := fmt.Sprintf("%s/%s/%s", ProviderName, idPoolResourceName, newData.Name.ValueString())
-		newConnector = connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), newFullPath)
+		writeConnector = connector.NewGeneric(r.providerData.ReferentialBucket.ValueString(), newFullPath)
+		// When renaming, the new file must not exist.
+		writeConnector.Generation = -1
 	}
 
-	// Write file.
-	err = newConnector.Write(ctx, cachedPool.Pool)
+	// Write the updated pool state.
+	err = writeConnector.Write(ctx, rebuiltPool)
 	if err != nil {
-		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot write new id_pool content for: %s on %s ", data.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot write updated id_pool '%s': %s", newData.Name.ValueString(), err.Error()))
 		return
 	}
-	// Update generation in cache
-	cachedPool.Generation = newConnector.Generation
 
-	// If name changed, invalidate old cache entry
-	if namedChanged {
+	// Invalidate the cache for this pool. This is safer than trying to update it
+	// in-place and ensures the next operation reads the fresh state from GCS.
+	r.providerData.CacheMutex.Lock()
+	delete(r.providerData.IdPoolsCache, data.Name.ValueString())
+	if nameChanged {
+		delete(r.providerData.IdPoolsCache, newData.Name.ValueString())
+	}
+	r.providerData.CacheMutex.Unlock()
+
+	// If the name changed, delete the old pool file.
+	if nameChanged {
 		// Remove old file.
 		err = gcpConnector.Delete(ctx)
 		if err != nil {
 			// This is not a fatal error, but we should warn the user. The old file is orphaned.
-			resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Cannot remove old id_pool %s after duplicate into new one %s on %s", data.Name.ValueString(), newData.Name.ValueString(), r.providerData.ReferentialBucket.ValueString()))
+			resp.Diagnostics.AddWarning("Orphaned pool file", fmt.Sprintf("Successfully renamed pool to '%s', but failed to delete the old file at '%s'. Manual cleanup may be required. Error: %s", newData.Name.ValueString(), oldFullPath, err.Error()))
 		}
-		// Invalidate old cache
-		r.providerData.CacheMutex.Lock()
-		delete(r.providerData.IdPoolsCache, data.Name.ValueString())
-		r.providerData.CacheMutex.Unlock()
 	}
-	// Save data into Terraform state.
-	newData.Reservations = data.Reservations
+
+	// Now, correctly populate the `newData` model to be saved into state.
+	// This is the fix for the "refresh plan was not empty" error.
+	newData.Id = data.Id // The ID must remain constant through updates.
+	err = idPoolFromToolToModel(&newData, rebuiltPool, r.providerData)
+	if err != nil {
+		resp.Diagnostics.AddError("id_pool update error", fmt.Sprintf("Failed to process updated pool data for %s: %s", newData.Name.ValueString(), err.Error()))
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newData)...)
 
 }
