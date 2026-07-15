@@ -1,6 +1,7 @@
 # Terraform Provider gcsreferential (Terraform Plugin SDK)
 
 Terraform Provider making GCS Bucket a referential for various stuff
+Is a personnal fork to test OpenTofu migration
 
 # Credits
 
