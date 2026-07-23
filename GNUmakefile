@@ -18,4 +18,4 @@ fmt:
 	go fmt ./...
 
 lint:
-	golang-lint run
+	golangci-lint run

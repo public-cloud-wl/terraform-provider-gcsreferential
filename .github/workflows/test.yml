@@ -29,10 +29,10 @@ jobs:
           cache: true
       - run: go mod download
       - run: go build -v .
+      - name: Build golangci-lint with current Go
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
       - name: Run linters
-        uses: golangci/golangci-lint-action@ec5d18412c0aeab7936cb16880d708ba2a64e1ae # v6.2.0
-        with:
-          version: latest
+        run: $(go env GOPATH)/bin/golangci-lint run
 
   generate:
     runs-on: ubuntu-latest
