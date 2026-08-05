@@ -41,7 +41,7 @@ func NewGeneric(BucketName string, FullFilePath string) GcpConnectorGeneric {
 }
 
 func NewNetwork(bucketName string, baseCidr string) GcpConnectorNetwork {
-	fileName := fmt.Sprintf("gcsreferential/cidr-reservation/baseCidr-%s.json", strings.Replace(strings.Replace(baseCidr, ".", "-", -1), "/", "-", -1))
+	fileName := fmt.Sprintf("gcsreferential/cidr-reservation/baseCidr-%s.json", strings.ReplaceAll(strings.ReplaceAll(baseCidr, ".", "-"), "/", "-"))
 	return GcpConnectorNetwork{GcpConnectorGeneric{bucketName, fileName, -1}, baseCidr}
 }
 
@@ -167,7 +167,7 @@ func (gcp *GcpConnectorGeneric) Lock(ctx context.Context) (uuid.UUID, error) {
 	lockPath := gcp.GetLockPath(ctx)
 	writer = bucket.Object(lockPath).If(storage.Conditions{DoesNotExist: true}).NewWriter(ctx)
 	if writer == nil {
-		return uuid.Nil, errors.New("Condition not met")
+		return uuid.Nil, errors.New("CONDITION NOT MET")
 	}
 	lockId := uuid.New()
 	_, err = writer.Write([]byte(lockId.String()))
@@ -216,7 +216,7 @@ func (gcp *GcpConnectorGeneric) Unlock(ctx context.Context, lockId uuid.UUID) er
 		return utils.Retry(func() error { return bucket.Object(lockPath).Delete(ctx) }, 5)
 	} else {
 		tflog.Debug(ctx, fmt.Sprintf("LOCKID DOES NOT CORRESPOND: %s %s", currentLockId, lockId.String()))
-		return errors.New("The lock id does not correspond, cannot unlock it")
+		return errors.New("THE LOCK ID DOES NOT CORRESPOND, CANNOT UNLOCK IT")
 	}
 }
 
@@ -302,7 +302,7 @@ func (gcp *GcpConnectorGeneric) WaitForlock(ctx context.Context, timeout time.Du
 		case <-time.After(sleepTime):
 			time.Sleep(sleepTime)
 		case <-ctx.Done():
-			return uuid.Nil, fmt.Errorf("Context canceled while waiting for lock: %w", ctx.Err())
+			return uuid.Nil, fmt.Errorf("CONTEXT CANCELED WHILE WAITING FOR LOCK: %w", ctx.Err())
 		}
 	}
 }
